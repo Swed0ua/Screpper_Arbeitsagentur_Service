@@ -152,15 +152,12 @@ class WebScraper:
         Переходить за посиланням в новій вкладці
         """
 
-        print("advert_item: -----> ",advert_item)
         advert_href = await advert_item.get_attribute("href")
-        print("advert_href: -----> ",advert_href)
 
         if not advert_href:
-            advert_href = await advert_item.get_attribute("url")
-
-        print("advert_href2: -----> ",advert_href)
-
+            link_element = advert_item.locator("a").first
+            if await link_element.count() > 0:
+                advert_href = await link_element.get_attribute("href")
 
         advert_href_clean = self._extrack_clean_url(advert_href)
         if advert_href_clean in self.existing_links: 
