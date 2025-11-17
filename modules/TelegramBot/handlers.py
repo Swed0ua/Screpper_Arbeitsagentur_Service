@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import os
+import tempfile
 from typing import List
 from aiogram import Dispatcher
 from aiogram.filters import Command
@@ -8,9 +9,12 @@ from aiogram import types
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram import F
 
 from initial import DBHandler, WebScraperHandler
 from modules.TelegramBot.dt import AVAIL_DICT, BERUF_DICT, BRANCH_DICT, TIME_DICT
+from modules.EmailProcessor.email_processor import EmailProcessor
+from config import MAX_CONCURRENT_EMAIL_PROCESSES
 from typess import FiltrOption, JobParams, ScraperStatus
 
 scraper_lock = asyncio.Lock()
@@ -75,6 +79,7 @@ async def main_menu_handler(message: Message, is_new_mess:bool=True):
             [InlineKeyboardButton(text="🔍 Пошук вакансій", callback_data=f"searchVcn")],
             [InlineKeyboardButton(text="⚙️ Налаштування фільтрів", callback_data=f"scraperFiltrs")],
             [InlineKeyboardButton(text="📥 Завантажити результати", callback_data=f"downloadResultMenu")],
+            [InlineKeyboardButton(text="📧 Обробити email листи", callback_data=f"processEmails")],
             [InlineKeyboardButton(text="🧾 Баланс сервісу 2Captcha", callback_data=f"getCaptchaBalance")]
         ])
     
@@ -256,6 +261,102 @@ async def create_and_send_csv(message: types.Message, max_old=None, session_id=N
     except Exception as e:
         print("Помилка в відправці csv:", e)
 
+async def process_email_file_handler(message: types.Message):
+    """
+    Handle file upload for email processing.
+    """
+    from modules.TelegramBot.bot import bot
+    
+    if not message.document:
+        await message.answer("Будь ласка, надішліть Excel або CSV файл.", parse_mode=ParseMode.HTML)
+        return
+    
+    file_name = message.document.file_name
+    file_extension = os.path.splitext(file_name)[1].lower()
+    
+    if file_extension not in ['.csv', '.xlsx', '.xls']:
+        await message.answer("Підтримуються тільки файли CSV або Excel (.csv, .xlsx, .xls)", parse_mode=ParseMode.HTML)
+        return
+    
+    # Check if process can be started
+    can_start, active_count = await EmailProcessor.can_start_process()
+    
+    if not can_start:
+        await message.answer(
+            f"❌ Зараз запущений процес обробки.\n\n"
+            f"Паралельний ліміт: {MAX_CONCURRENT_EMAIL_PROCESSES}\n"
+            f"Активних процесів: {active_count}",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    await message.answer("Обробка файлу... Це може зайняти деякий час.", parse_mode=ParseMode.HTML)
+    
+    # Progress message
+    progress_msg = None
+    
+    async def progress_callback(current: int, total: int, company_name: str = ""):
+        """Update progress in Telegram."""
+        nonlocal progress_msg
+        from modules.TelegramBot.bot import bot
+        
+        progress_text = (
+            f"📊 Обробка файлу:\n\n"
+            f"Оброблено: {current}/{total}\n"
+            f"Залишилося: {total - current}\n"
+            f"Прогрес: {int((current / total) * 100)}%\n\n"
+            f"Поточна компанія: {company_name}"
+        )
+        
+        try:
+            if progress_msg:
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=progress_msg.message_id,
+                    text=progress_text,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                progress_msg = await message.answer(progress_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            # If edit fails, send new message
+            pass
+    
+    try:
+        # Download file
+        file_info = await bot.get_file(message.document.file_id)
+        temp_dir = tempfile.gettempdir()
+        temp_file_path = os.path.join(temp_dir, file_name)
+        
+        await bot.download_file(file_info.file_path, temp_file_path)
+        
+        # Process file with progress callback
+        email_processor = EmailProcessor()
+        email_processor.set_progress_callback(progress_callback)
+        output_path = await email_processor.process_file(temp_file_path)
+        
+        # Send result file
+        result_file = types.FSInputFile(output_path)
+        await message.answer_document(result_file, caption="✅ Файл оброблено! Додано колонку з email листами.")
+        
+        # Delete progress message
+        if progress_msg:
+            try:
+                await bot.delete_message(chat_id=message.chat.id, message_id=progress_msg.message_id)
+            except:
+                pass
+        
+        # Cleanup
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        if os.path.exists(output_path):
+            os.remove(output_path)
+            
+    except Exception as e:
+        await message.answer(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)
+        print(f"Error processing email file: {e}")
+        await EmailProcessor.finish_process()
+
 # Обробка callback_handler
 async def procc_callback_handler(callback: CallbackQuery, state: FSMContext):
     callback_data = callback.data 
@@ -269,6 +370,12 @@ async def procc_callback_handler(callback: CallbackQuery, state: FSMContext):
         await filtr_menu_handler(callback.message, False)
     elif code == "downloadResultMenu":
         await result_menu_handler(callback.message, False)
+    elif code == "processEmails":
+        await callback.message.answer(
+            "Надішліть Excel або CSV файл для обробки email листів.\n\n"
+            "Файл повинен містити колонки з даними про компанії.",
+            parse_mode=ParseMode.HTML
+        )
     elif code == "getCaptchaBalance":
         await get_two_captcha_service_balance(callback.message)
     elif code == "res":
@@ -307,3 +414,6 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(stop_handler, Command("stop"))
     dp.message.register(get_id_handler, Command("id"))
     dp.message.register(get_two_captcha_service_balance, Command("tcp"))
+    
+    # Реєстрація обробника файлів для email
+    dp.message.register(process_email_file_handler, F.document)
