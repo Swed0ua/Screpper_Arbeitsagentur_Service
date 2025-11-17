@@ -15,7 +15,7 @@ class AdminMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event: Message, data: dict):
         # Перевірка, чи команда в списку винятків
-        if any(Command(command) for command in self.exempt_commands if command in event.text):
+        if event.text and any(Command(command) for command in self.exempt_commands if command in event.text):
             pass
         else:
             user_id_str = str(event.from_user.id)
