@@ -2,6 +2,8 @@
 
 import pandas as pd
 import os
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment
 
 
 class ExcelProcessor:
@@ -62,6 +64,18 @@ class ExcelProcessor:
             return str(value) if pd.notna(value) else default
         return default
     
+    def add_company_research_column(self, company_researches: list):
+        """
+        Add company research column to DataFrame.
+        
+        Args:
+            company_researches: List of company research strings
+        """
+        if self.df is None:
+            raise ValueError("File not loaded. Call load_file() first.")
+        
+        self.df['company_research'] = company_researches
+    
     def add_email_column(self, email_contents: list):
         """
         Add email content column to DataFrame.
@@ -76,7 +90,7 @@ class ExcelProcessor:
     
     async def save_file(self, output_path: str = None):
         """
-        Save DataFrame to Excel file.
+        Save DataFrame to Excel file with formatting.
         
         Args:
             output_path: Output file path (if None, overwrites original)
@@ -91,5 +105,53 @@ class ExcelProcessor:
         if file_extension == '.csv':
             self.df.to_csv(save_path, index=False, encoding='utf-8')
         else:
+            # Save to Excel
             self.df.to_excel(save_path, index=False, engine='openpyxl')
+            
+            # Format Excel file
+            wb = load_workbook(save_path)
+            ws = wb.active
+            
+            # Get column names from DataFrame
+            column_names = list(self.df.columns)
+            
+            # Set column widths
+            for idx, column in enumerate(ws.columns):
+                max_length = 0
+                column_letter = column[0].column_letter
+                column_name = column_names[idx] if idx < len(column_names) else ""
+                
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                
+                # Set width based on column type
+                if column_name in ['company_research', 'email_content']:
+                    # Wider for research and email columns
+                    adjusted_width = min(max(max_length + 2, 40), 80)
+                elif idx == 0:  # First column
+                    adjusted_width = min(max(max_length + 2, 15), 30)
+                else:
+                    # Standard width for other columns
+                    adjusted_width = min(max(max_length + 2, 15), 50)
+                
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Set row heights (smaller, compact)
+            for row_num in range(1, ws.max_row + 1):
+                ws.row_dimensions[row_num].height = 20
+            
+            # Set text wrapping and alignment
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.alignment = Alignment(
+                        wrap_text=True,
+                        vertical='top',
+                        horizontal='left'
+                    )
+            
+            wb.save(save_path)
 

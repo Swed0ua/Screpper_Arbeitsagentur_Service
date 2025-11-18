@@ -72,6 +72,7 @@ class EmailProcessor:
             await self._update_progress(0, total, "Початок обробки...")
             
             email_contents = []
+            company_researches = []
             
             # Process each company
             for i, company in enumerate(companies, 1):
@@ -79,6 +80,7 @@ class EmailProcessor:
                 
                 if not company_name:
                     email_contents.append("")
+                    company_researches.append("")
                     await self._update_progress(i, total, f"Пропущено (немає назви)")
                     continue
                 
@@ -98,10 +100,12 @@ class EmailProcessor:
                 )
                 
                 email_contents.append(email_content)
+                company_researches.append(company_research)
             
             await self._update_progress(total, total, "Збереження файлу...")
             
-            # Add email column to DataFrame
+            # Add columns to DataFrame (company_research before email_content)
+            processor.add_company_research_column(company_researches)
             processor.add_email_column(email_contents)
             
             # Save file
