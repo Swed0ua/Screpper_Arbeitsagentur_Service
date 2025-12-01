@@ -1,9 +1,15 @@
 """Email processor module for generating email content from Excel files."""
 
 import asyncio
+from typing import Optional
+from pathlib import Path
 from config import OPENAI_API_KEY, OPENAI_MODEL, MAX_CONCURRENT_EMAIL_PROCESSES
 from modules.AIService.openai_service import OpenAIService
 from modules.ExcelProcessor.excel_processor import ExcelProcessor
+from modules.EmailContentGenerator.template_parser import (
+    load_template_file, 
+    extract_template_fields
+)
 
 
 class EmailProcessor:
@@ -13,10 +19,42 @@ class EmailProcessor:
     _active_processes = 0
     _lock = asyncio.Lock()
     
-    def __init__(self):
-        """Initialize email processor."""
+    def __init__(self, template_path: Optional[str] = None):
+        """
+        Initialize email processor.
+        
+        Args:
+            template_path: Optional path to HTML template file
+        """
         self.ai_service = OpenAIService(api_key=OPENAI_API_KEY, model=OPENAI_MODEL)
         self._progress_callback = None
+        self.template_path = template_path
+        self.template_content = None
+        self.template_fields = None
+        
+        # Load template if provided
+        if template_path:
+            self._load_template()
+        else:
+            # Try to load default template
+            self._load_template()
+    
+    def _load_template(self):
+        """Load and parse template."""
+        try:
+            if self.template_path and Path(self.template_path).exists():
+                self.template_content = load_template_file(self.template_path)
+                self.template_fields = extract_template_fields(self.template_content)
+            else:
+                # Use default template
+                default_template = Path("template.html")
+                if default_template.exists():
+                    self.template_content = load_template_file(str(default_template))
+                    self.template_fields = extract_template_fields(self.template_content)
+        except Exception as e:
+            print(f"Warning: Could not load template: {e}")
+            self.template_content = None
+            self.template_fields = None
     
     def set_progress_callback(self, callback):
         """Set callback function for progress updates."""
@@ -86,21 +124,40 @@ class EmailProcessor:
                 
                 await self._update_progress(i, total, f"Обробка: {company_name}")
                 
-                # Research company
+                # Research company with template fields
                 company_research = await self.ai_service.research_company(
                     company_name=company_name,
-                    company_info=company
+                    company_info=company,
+                    required_fields=self.template_fields
                 )
                 
-                # Generate email content
+                # Generate email content using template
                 email_content = await self.ai_service.generate_email_content(
                     company_name=company_name,
                     company_research=company_research,
-                    job_title=company.get('title', '')
+                    job_title=company.get('title', ''),
+                    template_content=self.template_content,
+                    template_fields=self.template_fields
                 )
                 
+                # Перевірка довжини HTML
+                if email_content:
+                    html_length = len(email_content)
+                    print(f"Generated HTML length for {company_name}: {html_length} chars")
+                    
+                    # Якщо HTML занадто короткий (менше 1000 символів для повного шаблону)
+                    if html_length < 1000 and self.template_content:
+                        expected_length = len(self.template_content)
+                        print(f"WARNING: HTML seems too short for {company_name}")
+                        print(f"  Expected ~{expected_length} chars, got {html_length} chars")
+                        print(f"  Difference: {expected_length - html_length} chars")
+                
                 email_contents.append(email_content)
-                company_researches.append(company_research)
+                # Store research text for the research column
+                research_text = company_research.get('_research_text', '')
+                if not research_text:
+                    research_text = company_research.get('company_description', '')
+                company_researches.append(research_text)
             
             await self._update_progress(total, total, "Збереження файлу...")
             

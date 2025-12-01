@@ -14,8 +14,10 @@ from aiogram import F
 from initial import DBHandler, WebScraperHandler
 from modules.TelegramBot.dt import AVAIL_DICT, BERUF_DICT, BRANCH_DICT, TIME_DICT
 from modules.EmailProcessor.email_processor import EmailProcessor
+from modules.EmailContentGenerator.template_parser import extract_template_fields
 from config import MAX_CONCURRENT_EMAIL_PROCESSES
 from typess import FiltrOption, JobParams, ScraperStatus
+from pathlib import Path
 
 scraper_lock = asyncio.Lock()
 
@@ -80,6 +82,7 @@ async def main_menu_handler(message: Message, is_new_mess:bool=True):
             [InlineKeyboardButton(text="⚙️ Налаштування фільтрів", callback_data=f"scraperFiltrs")],
             [InlineKeyboardButton(text="📥 Завантажити результати", callback_data=f"downloadResultMenu")],
             [InlineKeyboardButton(text="📧 Обробити email листи", callback_data=f"processEmails")],
+            [InlineKeyboardButton(text="📄 Завантажити шаблон листа", callback_data=f"uploadTemplate")],
             [InlineKeyboardButton(text="🧾 Баланс сервісу 2Captcha", callback_data=f"getCaptchaBalance")]
         ])
     
@@ -261,12 +264,75 @@ async def create_and_send_csv(message: types.Message, max_old=None, session_id=N
     except Exception as e:
         print("Помилка в відправці csv:", e)
 
+async def process_file_handler(message: types.Message):
+    """
+    Handle file upload - routes to template or email processor based on file type.
+    """
+    if not message.document or not message.document.file_name:
+        await message.answer("Будь ласка, надішліть файл.", parse_mode=ParseMode.HTML)
+        return
+    
+    file_name = message.document.file_name
+    file_extension = os.path.splitext(file_name)[1].lower()
+    
+    # Route HTML files to template handler
+    if file_extension in ['.html', '.htm']:
+        await process_template_file_handler(message)
+        return
+    
+    # Route Excel/CSV files to email processor
+    if file_extension in ['.csv', '.xlsx', '.xls']:
+        await process_email_file_handler(message)
+        return
+    
+    # Unknown file type
+    await message.answer(
+        f"❌ Непідтримуваний тип файлу: {file_extension}\n\n"
+        f"Підтримуються:\n"
+        f"• HTML файли (.html, .htm) - для шаблонів\n"
+        f"• Excel/CSV файли (.csv, .xlsx, .xls) - для обробки email",
+        parse_mode=ParseMode.HTML
+    )
+
+async def process_template_file_handler(message: types.Message):
+    """
+    Handle template file upload.
+    """
+    from modules.TelegramBot.bot import bot
+    
+    try:
+        # Download file
+        file_info = await bot.get_file(message.document.file_id)
+        
+        # Save to templates directory or root as template.html
+        template_path = Path("template.html")
+        
+        await bot.download_file(file_info.file_path, str(template_path))
+        
+        # Extract and show fields
+        with open(template_path, 'r', encoding='utf-8') as f:
+            template_content = f.read()
+        
+        fields = extract_template_fields(template_content)
+        
+        fields_text = "\n".join([f"• <code>{field}</code>" for field in sorted(fields)]) if fields else "• Поля не знайдено"
+        
+        await message.answer(
+            f"✅ Шаблон успішно завантажено!\n\n"
+            f"📄 Файл: <b>{message.document.file_name}</b>\n"
+            f"📋 Знайдено полів: <b>{len(fields)}</b>\n\n"
+            f"<b>Список полів:</b>\n{fields_text}\n\n"
+            f"Шаблон буде використовуватися при обробці email листів.",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ Помилка при завантаженні шаблону: {str(e)}", parse_mode=ParseMode.HTML)
+
 async def process_email_file_handler(message: types.Message):
     """
     Handle file upload for email processing.
     """
-    from modules.TelegramBot.bot import bot
-    
     if not message.document:
         await message.answer("Будь ласка, надішліть Excel або CSV файл.", parse_mode=ParseMode.HTML)
         return
@@ -323,6 +389,8 @@ async def process_email_file_handler(message: types.Message):
             pass
     
     try:
+        from modules.TelegramBot.bot import bot
+        
         # Download file
         file_info = await bot.get_file(message.document.file_id)
         temp_dir = tempfile.gettempdir()
@@ -376,6 +444,13 @@ async def procc_callback_handler(callback: CallbackQuery, state: FSMContext):
             "Файл повинен містити колонки з даними про компанії.",
             parse_mode=ParseMode.HTML
         )
+    elif code == "uploadTemplate":
+        await callback.message.answer(
+            "Надішліть HTML файл шаблону листа.\n\n"
+            "Шаблон повинен містити поля у форматі {{ field.name }}\n"
+            "Наприклад: {{ contact.FIRSTNAME }}, {{ contact.COMPANY }}",
+            parse_mode=ParseMode.HTML
+        )
     elif code == "getCaptchaBalance":
         await get_two_captcha_service_balance(callback.message)
     elif code == "res":
@@ -415,5 +490,5 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(get_id_handler, Command("id"))
     dp.message.register(get_two_captcha_service_balance, Command("tcp"))
     
-    # Реєстрація обробника файлів для email
-    dp.message.register(process_email_file_handler, F.document)
+    # Реєстрація обробника файлів (роутинг всередині)
+    dp.message.register(process_file_handler, F.document)

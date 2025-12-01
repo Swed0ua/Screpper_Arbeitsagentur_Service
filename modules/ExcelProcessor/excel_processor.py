@@ -1,7 +1,9 @@
 """Excel file processor for reading and writing company data."""
 
-import pandas as pd
+import csv
 import os
+import math
+import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
@@ -88,9 +90,98 @@ class ExcelProcessor:
         
         self.df['email_content'] = email_contents
     
+    def _split_long_content(self, content: str, chunk_size: int = 32000) -> list:
+        """
+        Розбиває довгий текст на частини для Excel.
+        
+        Args:
+            content: Текст для розбиття
+            chunk_size: Розмір частини (за замовчуванням 32000, щоб був запас від ліміту Excel 32767)
+        
+        Returns:
+            Список частин тексту
+        """
+        if not content:
+            return [""]
+        
+        content_str = str(content)
+        parts = []
+        
+        # Розбиваємо на частини по chunk_size символів
+        for i in range(0, len(content_str), chunk_size):
+            parts.append(content_str[i:i + chunk_size])
+        
+        return parts
+    
+    def _prepare_dataframe_for_excel(self):
+        """
+        Підготовка DataFrame перед збереженням: розбиває довгі HTML колонки на частини.
+        Excel має ліміт 32767 символів на комірку, тому довгі HTML (>32000) треба розбивати на кілька колонок.
+        """
+        if self.df is None:
+            return
+        
+        EXCEL_CELL_LIMIT = 32767
+        CHUNK_SIZE = 32000  # Розмір частини (з запасом від ліміту)
+        
+        html_columns = ['email_content', 'company_research']
+        
+        # Знаходимо максимальну кількість частин для кожної HTML колонки
+        max_parts_needed = {}
+        
+        for col in html_columns:
+            if col not in self.df.columns:
+                continue
+            
+            max_parts = 1
+            for idx, value in self.df[col].items():
+                if pd.notna(value):
+                    value_str = str(value)
+                    if len(value_str) > CHUNK_SIZE:
+                        num_parts = math.ceil(len(value_str) / CHUNK_SIZE)
+                        max_parts = max(max_parts, num_parts)
+            
+            if max_parts > 1:
+                max_parts_needed[col] = max_parts
+                max_content_len = self.df[col].astype(str).str.len().max()
+                print(f"Column '{col}' will be split into {max_parts} parts (max content: {max_content_len} chars)")
+        
+        # Створюємо нові колонки для частин та заповнюємо їх
+        for col, num_parts in max_parts_needed.items():
+            # Створюємо нові колонки
+            for part_num in range(2, num_parts + 1):
+                part_col_name = f"{col}_part{part_num}"
+                if part_col_name not in self.df.columns:
+                    self.df[part_col_name] = ""
+            
+            # Розбиваємо контент для кожного рядка
+            for idx in self.df.index:
+                value = self.df.at[idx, col]
+                
+                if pd.notna(value):
+                    value_str = str(value)
+                    
+                    if len(value_str) > CHUNK_SIZE:
+                        # Розбиваємо на частини
+                        parts = self._split_long_content(value_str, CHUNK_SIZE)
+                        
+                        # Перша частина залишається в оригінальній колонці
+                        self.df.at[idx, col] = parts[0] if parts else ""
+                        
+                        # Додаткові частини додаємо в нові колонки
+                        for part_num in range(1, len(parts)):
+                            part_col_name = f"{col}_part{part_num + 1}"
+                            self.df.at[idx, part_col_name] = parts[part_num] if part_num < len(parts) else ""
+                    else:
+                        # Якщо не перевищує ліміт, заповнюємо нові колонки порожніми рядками
+                        for part_num in range(2, num_parts + 1):
+                            part_col_name = f"{col}_part{part_num}"
+                            self.df.at[idx, part_col_name] = ""
+    
     async def save_file(self, output_path: str = None):
         """
         Save DataFrame to Excel file with formatting.
+        Автоматично розбиває довгий HTML на кілька колонок, щоб уникнути обрізання.
         
         Args:
             output_path: Output file path (if None, overwrites original)
@@ -99,59 +190,80 @@ class ExcelProcessor:
             raise ValueError("No data to save.")
         
         save_path = output_path or self.file_path
-        
         file_extension = os.path.splitext(save_path)[1].lower()
         
         if file_extension == '.csv':
-            self.df.to_csv(save_path, index=False, encoding='utf-8')
+            # For CSV, ensure HTML is properly saved (no truncation)
+            self.df.to_csv(save_path, index=False, encoding='utf-8', quoting=csv.QUOTE_ALL)
+            print(f"File saved: {save_path}")
         else:
-            # Save to Excel
-            self.df.to_excel(save_path, index=False, engine='openpyxl')
+            # Для Excel - спочатку підготовка DataFrame (розбиття довгих HTML)
+            print("Preparing DataFrame: splitting long HTML content into multiple columns...")
+            self._prepare_dataframe_for_excel()
             
-            # Format Excel file
-            wb = load_workbook(save_path)
+            # Використовуємо openpyxl напряму
+            from openpyxl import Workbook
+            from openpyxl.utils import get_column_letter
+            
+            wb = Workbook()
             ws = wb.active
+            ws.title = "Sheet1"
             
-            # Get column names from DataFrame
-            column_names = list(self.df.columns)
+            # Записати заголовки
+            headers = list(self.df.columns)
+            ws.append(headers)
             
-            # Set column widths
-            for idx, column in enumerate(ws.columns):
-                max_length = 0
-                column_letter = column[0].column_letter
-                column_name = column_names[idx] if idx < len(column_names) else ""
+            EXCEL_CELL_LIMIT = 32767  # Фізичний ліміт Excel
+            
+            # Записати дані рядок за рядком
+            for idx, row in self.df.iterrows():
+                row_data = []
+                for col in headers:
+                    value = row[col]
+                    
+                    if pd.notna(value):
+                        value_str = str(value)
+                        
+                        # Логування для HTML колонок
+                        if 'email_content' in col or 'company_research' in col:
+                            print(f"Row {idx + 1}, Column {col}: {len(value_str)} chars")
+                        
+                        # Перевірка на Excel ліміт (на всяк випадок - має бути вже розбито)
+                        if len(value_str) > EXCEL_CELL_LIMIT:
+                            print(f"ERROR: Content STILL exceeds Excel limit! Row {idx + 1}, Column {col}: {len(value_str)} chars")
+                            print(f"  This should not happen after splitting. Truncating to {EXCEL_CELL_LIMIT} chars.")
+                            value_str = value_str[:EXCEL_CELL_LIMIT]
+                        
+                        row_data.append(value_str)
+                    else:
+                        row_data.append("")
                 
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
+                ws.append(row_data)
+            
+            # Встановити ширину колонок
+            for idx, col_name in enumerate(headers, 1):
+                column_letter = get_column_letter(idx)
                 
-                # Set width based on column type
-                if column_name in ['company_research', 'email_content']:
-                    # Wider for research and email columns
-                    adjusted_width = min(max(max_length + 2, 40), 80)
-                elif idx == 0:  # First column
-                    adjusted_width = min(max(max_length + 2, 15), 30)
+                if 'company_research' in col_name or 'email_content' in col_name:
+                    ws.column_dimensions[column_letter].width = 100
+                elif idx == 1:
+                    ws.column_dimensions[column_letter].width = 30
                 else:
-                    # Standard width for other columns
-                    adjusted_width = min(max(max_length + 2, 15), 50)
-                
-                ws.column_dimensions[column_letter].width = adjusted_width
+                    ws.column_dimensions[column_letter].width = 50
             
-            # Set row heights (smaller, compact)
+            # Встановити форматування для всіх комірок
             for row_num in range(1, ws.max_row + 1):
-                ws.row_dimensions[row_num].height = 20
+                for col_num, col_name in enumerate(headers, 1):
+                    cell = ws.cell(row=row_num, column=col_num)
+                    
+                    if cell.value and isinstance(cell.value, str):
+                        cell.alignment = Alignment(
+                            wrap_text=True,
+                            vertical='top',
+                            horizontal='left'
+                        )
             
-            # Set text wrapping and alignment
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.alignment = Alignment(
-                        wrap_text=True,
-                        vertical='top',
-                        horizontal='left'
-                    )
-            
+            # Зберегти файл
             wb.save(save_path)
+            print(f"File saved: {save_path}")
 

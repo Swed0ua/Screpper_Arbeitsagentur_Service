@@ -1,0 +1,2 @@
+"""Email content generator module."""
+
