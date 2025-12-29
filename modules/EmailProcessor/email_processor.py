@@ -111,6 +111,7 @@ class EmailProcessor:
             
             email_contents = []
             company_researches = []
+            suitability_results = []  # List of {'is_suitable': bool, 'industry': str, 'rejection_reason': str}
             
             # Process each company
             for i, company in enumerate(companies, 1):
@@ -119,6 +120,7 @@ class EmailProcessor:
                 if not company_name:
                     email_contents.append("")
                     company_researches.append("")
+                    suitability_results.append({'is_suitable': False, 'industry': 'Unknown', 'rejection_reason': 'No company name'})
                     await self._update_progress(i, total, f"Пропущено (немає назви)")
                     continue
                 
@@ -131,28 +133,46 @@ class EmailProcessor:
                     required_fields=self.template_fields
                 )
                 
-                # Generate email content using template
-                email_content = await self.ai_service.generate_email_content(
-                    company_name=company_name,
-                    company_research=company_research,
-                    job_title=company.get('title', ''),
-                    template_content=self.template_content,
-                    template_fields=self.template_fields
-                )
+                # Check if company is suitable
+                is_suitable = company_research.get('is_suitable', False)
+                industry = company_research.get('industry', 'Unknown')
+                rejection_reason = company_research.get('rejection_reason', '')
                 
-                # Перевірка довжини HTML
-                if email_content:
-                    html_length = len(email_content)
-                    print(f"Generated HTML length for {company_name}: {html_length} chars")
+                suitability_results.append({
+                    'is_suitable': is_suitable,
+                    'industry': industry,
+                    'rejection_reason': rejection_reason
+                })
+                
+                # Generate email content ONLY if company is suitable
+                if is_suitable:
+                    # Generate email content using template
+                    email_content = await self.ai_service.generate_email_content(
+                        company_name=company_name,
+                        company_research=company_research,
+                        job_title=company.get('title', ''),
+                        template_content=self.template_content,
+                        template_fields=self.template_fields
+                    )
                     
-                    # Якщо HTML занадто короткий (менше 1000 символів для повного шаблону)
-                    if html_length < 1000 and self.template_content:
-                        expected_length = len(self.template_content)
-                        print(f"WARNING: HTML seems too short for {company_name}")
-                        print(f"  Expected ~{expected_length} chars, got {html_length} chars")
-                        print(f"  Difference: {expected_length - html_length} chars")
+                    # Перевірка довжини HTML
+                    if email_content:
+                        html_length = len(email_content)
+                        print(f"Generated HTML length for {company_name}: {html_length} chars")
+                        
+                        # Якщо HTML занадто короткий (менше 1000 символів для повного шаблону)
+                        if html_length < 1000 and self.template_content:
+                            expected_length = len(self.template_content)
+                            print(f"WARNING: HTML seems too short for {company_name}")
+                            print(f"  Expected ~{expected_length} chars, got {html_length} chars")
+                            print(f"  Difference: {expected_length - html_length} chars")
+                    
+                    email_contents.append(email_content)
+                else:
+                    # Not suitable - don't generate email, just add empty string
+                    email_contents.append("")
+                    print(f"Company {company_name} is not suitable: {rejection_reason}")
                 
-                email_contents.append(email_content)
                 # Store research text for the research column
                 research_text = company_research.get('_research_text', '')
                 if not research_text:
@@ -163,6 +183,7 @@ class EmailProcessor:
             
             # Add columns to DataFrame (company_research before email_content)
             processor.add_company_research_column(company_researches)
+            processor.add_suitability_columns(suitability_results)
             processor.add_email_column(email_contents)
             
             # Save file

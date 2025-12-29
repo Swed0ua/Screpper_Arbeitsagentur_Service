@@ -78,6 +78,31 @@ class ExcelProcessor:
         
         self.df['company_research'] = company_researches
     
+    def add_suitability_columns(self, suitability_results: list):
+        """
+        Add suitability columns to DataFrame.
+        
+        Args:
+            suitability_results: List of dicts with 'is_suitable', 'industry', 'rejection_reason'
+        """
+        if self.df is None:
+            raise ValueError("File not loaded. Call load_file() first.")
+        
+        # Extract values from suitability results
+        is_suitable_list = []
+        industry_list = []
+        rejection_reason_list = []
+        
+        for result in suitability_results:
+            is_suitable_list.append(result.get('is_suitable', False))
+            industry_list.append(result.get('industry', 'Unknown'))
+            rejection_reason_list.append(result.get('rejection_reason', ''))
+        
+        # Add columns to DataFrame
+        self.df['is_suitable'] = is_suitable_list
+        self.df['industry'] = industry_list
+        self.df['rejection_reason'] = rejection_reason_list
+    
     def add_email_column(self, email_contents: list):
         """
         Add email content column to DataFrame.
