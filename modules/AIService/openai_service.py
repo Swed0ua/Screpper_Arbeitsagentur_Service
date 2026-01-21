@@ -2,6 +2,8 @@
 
 import re
 import json
+import os
+from pathlib import Path
 from typing import Optional, Set, Dict
 from openai import AsyncOpenAI
 
@@ -19,6 +21,8 @@ class OpenAIService:
         """
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
+        self.temp_template_path = Path("temporary_file.html")
+        self.tags_description = {}
     
     async def research_company(
         self, 
@@ -304,11 +308,13 @@ Examples:
         """
         try:
             if template_content:
-                # Використати дані з company_research замість окремого запиту
+                # Перевірити чи є оброблений template
+                processed_template = await self._get_processed_template(template_content)
+                
+                # Підготувати field_values
                 field_values = {}
                 if template_fields:
                     for field in template_fields:
-                        # Дані вже є в company_research з research_company
                         if field in company_research:
                             field_values[field] = company_research[field]
                         elif 'company' in field.lower():
@@ -316,18 +322,17 @@ Examples:
                         else:
                             field_values[field] = "N/A"
                 
-                # Об'єднати генерацію тексту та заміну в шаблоні в один запит
-                modified_template = await self._generate_and_replace_template(
-                    template_content,
+                # Генерувати JSON зі значеннями для тегів
+                tags_json = await self._generate_tags_content(
+                    processed_template,
                     company_name,
                     company_research,
                     job_title,
                     field_values
                 )
                 
-                # Fill template placeholders with field values
-                from modules.EmailContentGenerator.template_parser import fill_template
-                filled_content = fill_template(modified_template, field_values)
+                # Підставити значення в template
+                filled_content = self._fill_tags_in_template(processed_template, tags_json, field_values)
                 
                 return filled_content
             else:
@@ -656,56 +661,150 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
             # Fallback: return basic text
             return f"Guten Tag, {firstname if firstname else ''}\n\nWir möchten Ihnen ein Angebot für {company_name} präsentieren."
     
-    async def _generate_and_replace_template(
+    async def prepare_template_with_tags(self, template_content: str) -> tuple[str, dict]:
+        """
+        Один раз обробляє template: замінює динамічний текст на теги.
+        
+        Returns:
+            (modified_template, tags_description)
+        """
+        system_prompt = """You are a template processor. Replace dynamic text content with tags while preserving ALL HTML structure, styles, placeholders, prices, locations.
+
+CRITICAL:
+- Keep ALL HTML structure, tags, styles EXACTLY as is
+- Keep ALL {{contact.FIRSTNAME}}, {{contact.COMPANY}} placeholders EXACTLY as is
+- Keep ALL prices, locations, numbers EXACTLY as is
+- Keep footer, header, cards structure EXACTLY as is
+- Only replace DYNAMIC TEXT CONTENT with tags like {{MAIN_MAIL}}, {{INTRO_TEXT}}, etc.
+
+Return JSON:
+{
+  "template": "modified HTML with tags",
+  "tags": {
+    "{{MAIN_MAIL}}": "1-2 sentence description of what should be here",
+    "{{INTRO_TEXT}}": "1-2 sentence description",
+    ...
+  }
+}"""
+        
+        user_prompt = f"""Process this HTML template. Replace dynamic text with tags ({{TAG_NAME}}). Keep structure, styles, placeholders, data.
+
+{template_content}
+
+Return JSON with modified template and tags description."""
+        
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        modified_template = result.get('template', template_content)
+        tags_description = result.get('tags', {})
+        
+        # Зберегти оброблений template
+        with open(self.temp_template_path, 'w', encoding='utf-8') as f:
+            f.write(modified_template)
+        
+        # Зберегти опис тегів
+        self.tags_description = tags_description
+        
+        print(f"Template processed and saved to {self.temp_template_path}")
+        print(f"Tags created: {list(tags_description.keys())}")
+        
+        return modified_template, tags_description
+    
+    async def _get_processed_template(self, original_template: str) -> str:
+        """Отримує оброблений template (з тегами) або обробляє якщо немає."""
+        if self.temp_template_path.exists():
+            # Читати збережений оброблений template
+            with open(self.temp_template_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        else:
+            # Обробити template один раз
+            processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
+            self.tags_description = tags_desc
+            return processed_template
+    
+    async def _generate_tags_content(
         self,
-        template_content: str,
+        template_with_tags: str,
         company_name: str,
         company_research: Dict[str, str],
         job_title: str,
         field_values: Dict[str, str]
-    ) -> str:
-        """Генерує персоналізований текст та замінює його в шаблоні за один запит."""
-        try:
-            firstname = field_values.get('contact.FIRSTNAME', field_values.get('FIRSTNAME', ''))
-            lastname = field_values.get('contact.LASTNAME', field_values.get('LASTNAME', ''))
-            industry = company_research.get('industry', '')
-            
-            system_prompt = """You are an email template editor. Replace main body text with personalized content. Preserve ALL {{placeholders}}, prices, locations, HTML structure."""
-            
-            user_prompt = f"""Company: {company_name}
-Recipient: {firstname} {lastname}
+    ) -> Dict[str, str]:
+        """Генерує JSON зі значеннями для тегів у template."""
+        
+        # Витягнути всі теги з template
+        tags = re.findall(r'\{\{([A-Z_]+)\}\}', template_with_tags)
+        unique_tags = list(set(tags))
+        
+        if not unique_tags:
+            return {}
+        
+        firstname = field_values.get('contact.FIRSTNAME', field_values.get('FIRSTNAME', ''))
+        industry = company_research.get('industry', '')
+        
+        # Створити опис тегів для AI
+        tags_info = {}
+        for tag in unique_tags:
+            tag_key = f"{{{{{tag}}}}}"
+            if tag_key in self.tags_description:
+                tags_info[tag] = self.tags_description[tag_key]
+            else:
+                tags_info[tag] = "Personalized content"
+        
+        system_prompt = """Generate personalized content for template tags. Return JSON with tag values."""
+        
+        user_prompt = f"""Company: {company_name}
+Recipient: {firstname}
 Job: {job_title}
 Industry: {industry}
 
-TEMPLATE:
-{template_content}
+Generate content for these tags:
+{json.dumps(tags_info, indent=2, ensure_ascii=False)}
 
-TASK: Replace ONLY the main introductory text (after greeting) with personalized text about {company_name}'s {industry} business. Keep ALL {{placeholders}}, prices, locations, HTML structure EXACTLY as is.
-
-Return complete HTML."""
-            
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.6
-            )
-            
-            modified_template = response.choices[0].message.content.strip()
-            
-            # Extract HTML if AI wrapped it in markdown code blocks
-            if modified_template.startswith('```html'):
-                modified_template = modified_template.replace('```html', '').replace('```', '').strip()
-            elif modified_template.startswith('```'):
-                modified_template = modified_template.replace('```', '').strip()
-            
-            return modified_template
-            
-        except Exception as e:
-            print(f"Error generating template: {e}")
-            return template_content
+Professional, warm tone. German language. Return JSON with tag names as keys."""
+        
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.6,
+            response_format={"type": "json_object"},
+            max_tokens=500
+        )
+        
+        return json.loads(response.choices[0].message.content)
+    
+    def _fill_tags_in_template(
+        self,
+        template: str,
+        tags_json: Dict[str, str],
+        field_values: Dict[str, str]
+    ) -> str:
+        """Підставляє значення з JSON та field_values в template."""
+        result = template
+        
+        # Підставити значення з tags_json ({{MAIN_MAIL}} тощо)
+        for tag, value in tags_json.items():
+            # Додати {{ }} якщо немає
+            tag_with_braces = tag if tag.startswith('{{') else f'{{{{{tag}}}}}'
+            result = result.replace(tag_with_braces, value)
+        
+        # Підставити значення з field_values ({{contact.FIRSTNAME}} тощо)
+        from modules.EmailContentGenerator.template_parser import fill_template
+        result = fill_template(result, field_values)
+        
+        return result
     
     async def _replace_template_text(
         self, 
