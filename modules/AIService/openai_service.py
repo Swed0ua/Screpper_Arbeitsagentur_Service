@@ -733,7 +733,7 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
         Returns:
             (modified_template, tags_description)
         """
-        system_prompt = """You are a template processor. Your task is to replace ALL dynamic text content with tags like {{MAIN_MAIL}}, {{INTRO_TEXT}}, etc.
+        system_prompt = """You are a template processor. Replace dynamic text content with tags like {{MAIN_MAIL}}, {{INTRO_TEXT}}, etc.
 
 CRITICAL RULES:
 1. Keep ALL HTML structure, tags, styles, attributes EXACTLY as is
@@ -746,15 +746,13 @@ EXAMPLE:
 BEFORE: <p>ich hoffe, diese Nachricht erreicht Sie in bester Verfassung. Wir möchten Ihnen ein einzigartiges Angebot...</p>
 AFTER: <p>{{MAIN_MAIL}}</p>
 
-Return JSON:
+Return the FULL modified HTML template. Then at the very end, add a comment with JSON describing the tags:
+<!--TAGS_DESCRIPTION:
 {
-  "template": "full modified HTML with tags",
-  "tags": {
-    "{{MAIN_MAIL}}": "Main intro paragraph (2-3 sentences about company appreciation and cooperation interest)",
-    "{{INTRO_TEXT}}": "Additional intro text (1-2 sentences)",
-    ...
-  }
-}"""
+  "{{MAIN_MAIL}}": "Main intro paragraph (2-3 sentences)",
+  "{{INTRO_TEXT}}": "Additional intro text"
+}
+-->"""
         
         user_prompt = f"""Process this HTML template. Find ALL dynamic text paragraphs and replace them with tags.
 
@@ -772,7 +770,7 @@ KEEP UNCHANGED:
 Template:
 {template_content}
 
-Return JSON with FULL modified template (all HTML) and tags description."""
+Return the FULL modified HTML template with tags, then add comment at the end with tags description in JSON format."""
         
         print(f"📤 Sending template to AI for processing ({len(template_content)} chars)...")
         
@@ -783,66 +781,41 @@ Return JSON with FULL modified template (all HTML) and tags description."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,  # Нижче для точності
-                response_format={"type": "json_object"},
-                max_tokens=16000  # Збільшити для великого HTML
+                temperature=0.2,
+                # НЕ використовуємо response_format - AI поверне HTML напряму
+                max_tokens=16000
             )
             
             print(f"📥 AI response received")
-            ai_content = response.choices[0].message.content
+            ai_content = response.choices[0].message.content.strip()
             print(f"📊 AI response length: {len(ai_content)} chars")
             
-            # Парсити JSON
-            try:
-                result = json.loads(ai_content)
-            except json.JSONDecodeError as e:
-                print(f"❌ CRITICAL: Failed to parse AI JSON response!")
-                print(f"❌ JSON Error: {e}")
-                print(f"📋 First 1000 chars of response: {ai_content[:1000]}")
-                
-                # Спробувати виправити JSON - знайти JSON об'єкт в тексті
-                try:
-                    import re
-                    # Шукати JSON об'єкт між { }
-                    json_match = re.search(r'\{.*\}', ai_content, re.DOTALL)
-                    if json_match:
-                        fixed_json = json_match.group(0)
-                        # Спробувати виправити незакриті лапки в HTML
-                        # Замінити проблемні символи
-                        fixed_json = fixed_json.replace('\n', '\\n').replace('\r', '\\r')
-                        # Спробувати парсити
-                        result = json.loads(fixed_json)
-                        print(f"✅ Fixed JSON manually")
-                    else:
-                        raise
-                except Exception as e2:
-                    print(f"❌ Could not fix JSON: {e2}")
-                    # Використати оригінальний template якщо не вдалося виправити
-                    modified_template = template_content
-                    tags_description = {}
-                    # Продовжити виконання замість raise
-                    result = {}
+            # Витягнути HTML і tags_description з коментаря
+            import re
             
-            # Перевірити чи result не порожній (якщо була помилка JSON)
-            if not result:
-                modified_template = template_content
-                tags_description = {}
-            else:
-                modified_template = result.get('template', '')
-                tags_description = result.get('tags', {})
-                
-                # КРИТИЧНА ПЕРЕВІРКА
-                if not modified_template:
-                    print(f"❌ CRITICAL: AI returned EMPTY template!")
-                    print(f"📋 Result keys: {list(result.keys())}")
-                    print(f"📋 Tags description: {tags_description}")
-                    # Використати оригінальний template якщо AI не повернув
-                    modified_template = template_content
+            # Шукати JSON коментар в кінці
+            tags_comment_pattern = r'<!--TAGS_DESCRIPTION:\s*(\{.*?\})\s*-->'
+            tags_comment_match = re.search(tags_comment_pattern, ai_content, re.DOTALL)
+            
+            if tags_comment_match:
+                tags_json_str = tags_comment_match.group(1)
+                try:
+                    tags_description = json.loads(tags_json_str)
+                    # Видалити коментар з HTML
+                    modified_template = re.sub(tags_comment_pattern, '', ai_content, flags=re.DOTALL).strip()
+                    print(f"✅ Extracted tags description from comment: {list(tags_description.keys())}")
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ Failed to parse tags JSON from comment: {e}")
                     tags_description = {}
+                    modified_template = ai_content
+            else:
+                # Якщо коментаря немає - використати весь текст як HTML
+                print(f"⚠️ No TAGS_DESCRIPTION comment found in AI response")
+                modified_template = ai_content
+                tags_description = {}
             
             print(f"📋 Modified template length: {len(modified_template)} chars")
             print(f"📋 Original template length: {len(template_content)} chars")
-            print(f"📋 Tags description keys: {list(tags_description.keys())}")
             
         except Exception as e:
             print(f"❌ CRITICAL ERROR in AI processing: {e}")
