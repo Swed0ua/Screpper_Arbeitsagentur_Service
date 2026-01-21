@@ -781,9 +781,8 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,
-                # НЕ використовуємо response_format - AI поверне HTML напряму
-                max_tokens=16000
+                temperature=0.2
+                # НЕ встановлюємо max_tokens - дозволити AI повернути весь HTML
             )
             
             print(f"📥 AI response received")
@@ -817,6 +816,13 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
             print(f"📋 Modified template length: {len(modified_template)} chars")
             print(f"📋 Original template length: {len(template_content)} chars")
             
+            # КРИТИЧНА ПЕРЕВІРКА - якщо template обрізаний, використати оригінал
+            if len(modified_template) < len(template_content) * 0.8:
+                print(f"⚠️ WARNING: Modified template is too short ({len(modified_template)} vs {len(template_content)}) - possible truncation!")
+                print(f"⚠️ Using original template as fallback")
+                modified_template = template_content
+                tags_description = {}
+            
         except Exception as e:
             print(f"❌ CRITICAL ERROR in AI processing: {e}")
             import traceback
@@ -846,8 +852,23 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
         try:
             with open(self.temp_template_path, 'w', encoding='utf-8') as f:
                 f.write(modified_template)
+            file_size = self.temp_template_path.stat().st_size
             print(f"✅ Template file written: {self.temp_template_path.absolute()}")
-            print(f"✅ File size: {self.temp_template_path.stat().st_size} bytes")
+            print(f"✅ File size: {file_size} bytes")
+            print(f"✅ Template length: {len(modified_template)} chars")
+            
+            # ПЕРЕВІРКА: чи файл збережено повністю
+            if file_size != len(modified_template.encode('utf-8')):
+                print(f"⚠️ WARNING: File size mismatch! Expected ~{len(modified_template.encode('utf-8'))} bytes, got {file_size}")
+            
+            # Перевірити чи зчитаний файл співпадає
+            with open(self.temp_template_path, 'r', encoding='utf-8') as f:
+                read_back = f.read()
+            if read_back != modified_template:
+                print(f"❌ CRITICAL: Written and read content don't match!")
+                print(f"Written: {len(modified_template)} chars, Read: {len(read_back)} chars")
+                raise Exception("File write verification failed!")
+                
         except Exception as e:
             print(f"❌ CRITICAL ERROR saving file: {e}")
             import traceback
