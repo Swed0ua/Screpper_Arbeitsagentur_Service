@@ -327,10 +327,52 @@ Examples:
                 found_tags = re.findall(r'\{\{([A-Z_]+)\}\}', processed_template)
                 
                 if not found_tags:
-                    # FALLBACK: якщо template не оброблений - використати старий метод
-                    print("⚠️ Template not processed (no tags found), using fallback method")
+                    # FALLBACK: якщо template не оброблений - використати старий метод з AI
+                    print("⚠️ Template not processed (no tags found), using AI fallback method")
+                    print("🔄 Generating personalized HTML using old method...")
+                    
+                    # Генерувати персоналізований текст через AI
+                    firstname = field_values.get('contact.FIRSTNAME', field_values.get('FIRSTNAME', ''))
+                    lastname = field_values.get('contact.LASTNAME', field_values.get('LASTNAME', ''))
+                    industry = company_research.get('industry', '')
+                    
+                    system_prompt = """You are an email template editor. Replace main body text with personalized content. Preserve ALL {{placeholders}}, prices, locations, HTML structure."""
+                    
+                    user_prompt = f"""Company: {company_name}
+Recipient: {firstname} {lastname}
+Job: {job_title}
+Industry: {industry}
+
+TEMPLATE:
+{template_content[:5000]}
+
+TASK: Replace ONLY the main introductory text (after greeting) with personalized text about {company_name}'s {industry} business. Keep ALL {{placeholders}}, prices, locations, HTML structure EXACTLY as is.
+
+Return complete HTML."""
+                    
+                    response = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.6
+                    )
+                    
+                    modified_template = response.choices[0].message.content.strip()
+                    
+                    # Extract HTML if AI wrapped it in markdown code blocks
+                    if modified_template.startswith('```html'):
+                        modified_template = modified_template.replace('```html', '').replace('```', '').strip()
+                    elif modified_template.startswith('```'):
+                        modified_template = modified_template.replace('```', '').strip()
+                    
+                    # Fill template placeholders with field values
                     from modules.EmailContentGenerator.template_parser import fill_template
-                    return fill_template(template_content, field_values)
+                    filled_content = fill_template(modified_template, field_values)
+                    
+                    print(f"✅ Fallback method generated: {len(filled_content)} chars")
+                    return filled_content
                 
                 # Генерувати JSON зі значеннями для тегів
                 tags_json = await self._generate_tags_content(
