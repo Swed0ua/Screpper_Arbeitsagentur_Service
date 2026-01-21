@@ -344,20 +344,23 @@ Job: {job_title}
 Industry: {industry}
 
 TEMPLATE:
-{template_content[:5000]}
+{template_content}
 
 TASK: Replace ONLY the main introductory text (after greeting) with personalized text about {company_name}'s {industry} business. Keep ALL {{placeholders}}, prices, locations, HTML structure EXACTLY as is.
 
-Return complete HTML."""
+Return complete HTML with ALL original content preserved."""
                     
+                    print(f"📤 Sending FULL template to AI for fallback generation ({len(template_content)} chars)")
                     response = await self.client.chat.completions.create(
                         model=self.model,
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        temperature=0.6
+                        temperature=0.6,
+                        max_tokens=8000  # Збільшити для повного HTML
                     )
+                    print(f"📥 Received AI response")
                     
                     modified_template = response.choices[0].message.content.strip()
                     
@@ -761,41 +764,75 @@ Template:
 
 Return JSON with FULL modified template (all HTML) and tags description."""
         
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.2,  # Нижче для точності
-            response_format={"type": "json_object"}
-        )
+        print(f"📤 Sending template to AI for processing ({len(template_content)} chars)...")
         
-        result = json.loads(response.choices[0].message.content)
-        modified_template = result.get('template', template_content)
-        tags_description = result.get('tags', {})
-        
-        print(f"📋 AI response received")
-        print(f"📋 Modified template length: {len(modified_template)} chars")
-        print(f"📋 Original template length: {len(template_content)} chars")
-        print(f"📋 Tags description keys: {list(tags_description.keys())}")
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.2,  # Нижче для точності
+                response_format={"type": "json_object"},
+                max_tokens=16000  # Збільшити для великого HTML
+            )
+            
+            print(f"📥 AI response received")
+            ai_content = response.choices[0].message.content
+            print(f"📊 AI response length: {len(ai_content)} chars")
+            
+            # Парсити JSON
+            try:
+                result = json.loads(ai_content)
+            except json.JSONDecodeError as e:
+                print(f"❌ CRITICAL: Failed to parse AI JSON response!")
+                print(f"❌ JSON Error: {e}")
+                print(f"📋 First 500 chars of response: {ai_content[:500]}")
+                raise Exception(f"AI returned invalid JSON: {e}")
+            
+            modified_template = result.get('template', '')
+            tags_description = result.get('tags', {})
+            
+            # КРИТИЧНА ПЕРЕВІРКА
+            if not modified_template:
+                print(f"❌ CRITICAL: AI returned EMPTY template!")
+                print(f"📋 Result keys: {list(result.keys())}")
+                print(f"📋 Tags description: {tags_description}")
+                # Використати оригінальний template якщо AI не повернув
+                modified_template = template_content
+                tags_description = {}
+            
+            print(f"📋 Modified template length: {len(modified_template)} chars")
+            print(f"📋 Original template length: {len(template_content)} chars")
+            print(f"📋 Tags description keys: {list(tags_description.keys())}")
+            
+        except Exception as e:
+            print(f"❌ CRITICAL ERROR in AI processing: {e}")
+            import traceback
+            traceback.print_exc()
+            # Використати оригінальний template якщо помилка
+            modified_template = template_content
+            tags_description = {}
         
         # ПЕРЕВІРКА чи теги створені
         found_tags = re.findall(r'\{\{([A-Z_]+)\}\}', modified_template)
-        
-        if not found_tags:
-            print("❌ ERROR: AI did not create tags! Returning original template.")
-            print(f"Template length: {len(modified_template)}")
-            print(f"Template preview (first 1000 chars): {modified_template[:1000]}")
-            return template_content, {}
-        
-        print(f"✅ Found {len(found_tags)} tags: {found_tags}")
         
         # Створити директорію якщо немає
         self.temp_template_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"📁 Directory ready: {self.temp_template_path.parent.absolute()}")
         
-        # Зберегти файл
+        if not found_tags:
+            print("❌ ERROR: AI did not create tags! Will use original template for fallback.")
+            print(f"Template length: {len(modified_template)}")
+            print(f"Template preview (first 1000 chars): {modified_template[:1000]}")
+            # Все одно зберегти оригінальний template для fallback методу
+            modified_template = template_content
+            tags_description = {}
+        else:
+            print(f"✅ Found {len(found_tags)} tags: {found_tags}")
+        
+        # ЗАВЖДИ зберегти файл (навіть якщо теги не створені)
         try:
             with open(self.temp_template_path, 'w', encoding='utf-8') as f:
                 f.write(modified_template)
@@ -845,19 +882,54 @@ Return JSON with FULL modified template (all HTML) and tags description."""
         
         # Обробити template
         print(f"🚀 Starting template processing...")
-        processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
-        self.tags_description = tags_desc
-        self._template_processed = True  # Позначити що оброблено
         
-        print(f"📊 Processed template: {len(processed_template)} chars")
-        print(f"✅ Template file MUST be created: {self.temp_template_path.absolute()}")
-        print(f"✅ File exists after processing: {self.temp_template_path.exists()}")
-        
-        if not self.temp_template_path.exists():
-            print(f"❌ CRITICAL ERROR: File was not created!")
-            raise Exception("Template file was not created!")
-        
-        return processed_template
+        try:
+            processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
+            self.tags_description = tags_desc
+            self._template_processed = True  # Позначити що оброблено
+            
+            print(f"📊 Processed template: {len(processed_template)} chars")
+            print(f"✅ Template file MUST be created: {self.temp_template_path.absolute()}")
+            
+            # КРИТИЧНА ПЕРЕВІРКА - файл МАЄ існувати після prepare_template_with_tags
+            if not self.temp_template_path.exists():
+                print(f"❌ CRITICAL ERROR: File was not created after prepare_template_with_tags!")
+                print(f"❌ Path: {self.temp_template_path.absolute()}")
+                print(f"❌ Parent exists: {self.temp_template_path.parent.exists()}")
+                # Спробувати створити файл вручну
+                try:
+                    self.temp_template_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(self.temp_template_path, 'w', encoding='utf-8') as f:
+                        f.write(processed_template)
+                    print(f"✅ Manually created file: {self.temp_template_path.absolute()}")
+                    print(f"✅ File size: {self.temp_template_path.stat().st_size} bytes")
+                except Exception as e:
+                    print(f"❌ Failed to manually create file: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise Exception(f"Template file was not created! Manual creation failed: {e}")
+            
+            print(f"✅ File exists after processing: {self.temp_template_path.exists()}")
+            print(f"✅ File size: {self.temp_template_path.stat().st_size} bytes")
+            
+            return processed_template
+            
+        except Exception as e:
+            print(f"❌ CRITICAL ERROR in template processing: {e}")
+            import traceback
+            traceback.print_exc()
+            # Якщо все не вдалося - спробувати зберегти оригінальний template
+            try:
+                print(f"🔄 Attempting to save original template as fallback...")
+                self.temp_template_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.temp_template_path, 'w', encoding='utf-8') as f:
+                    f.write(original_template)
+                print(f"✅ Saved original template as fallback: {self.temp_template_path.absolute()}")
+                self._template_processed = True
+                return original_template
+            except Exception as e2:
+                print(f"❌ CRITICAL: Even fallback save failed: {e2}")
+                raise
     
     async def _generate_tags_content(
         self,
