@@ -358,7 +358,7 @@ Return complete HTML with ALL original content preserved."""
                             {"role": "user", "content": user_prompt}
                         ],
                         temperature=0.6,
-                        max_tokens=16000
+                        max_tokens=1006000
                     )
                     print(f"📥 Received AI response")
                     
