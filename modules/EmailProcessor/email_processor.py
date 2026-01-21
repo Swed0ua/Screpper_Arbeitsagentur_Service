@@ -10,6 +10,7 @@ from modules.EmailContentGenerator.template_parser import (
     load_template_file, 
     extract_template_fields
 )
+from modules.DatabaceSQLiteController.async_sq_lite_connector import AsyncSQLiteConnector, EmailDatabase
 
 
 class EmailProcessor:
@@ -31,6 +32,7 @@ class EmailProcessor:
         self.template_path = template_path
         self.template_content = None
         self.template_fields = None
+        self.email_db = None  # Ініціалізується в process_file
         
         # Load template if provided
         if template_path:
@@ -98,6 +100,12 @@ class EmailProcessor:
         Returns:
             Path to output file with email content
         """
+        # Ініціалізувати БД для email
+        db_connector = AsyncSQLiteConnector("sent_emails_db")
+        await db_connector.connect()
+        self.email_db = EmailDatabase(db_connector)
+        await self.email_db.init_table()
+        
         try:
             # Load file
             processor = ExcelProcessor(file_path)
@@ -123,6 +131,18 @@ class EmailProcessor:
                     suitability_results.append({'is_suitable': False, 'industry': 'Unknown', 'rejection_reason': 'No company name'})
                     await self._update_progress(i, total, f"Пропущено (немає назви)")
                     continue
+                
+                # Перевірити email перед обробкою
+                email = company.get('email', '').strip()
+                if email:
+                    can_send = await self.email_db.can_send_email(email)
+                    if not can_send:
+                        email_contents.append("")
+                        company_researches.append("")
+                        suitability_results.append({'is_suitable': False, 'industry': 'Unknown', 'rejection_reason': f'Email відправлявся менше 3 місяців тому'})
+                        await self._update_progress(i, total, f"Пропущено: {company_name} (email відправлявся нещодавно)")
+                        print(f"⏭️ Пропущено {company_name}: email {email} відправлявся менше 3 місяців тому")
+                        continue
                 
                 await self._update_progress(i, total, f"Обробка: {company_name}")
                 
@@ -168,6 +188,11 @@ class EmailProcessor:
                             print(f"  Difference: {expected_length - html_length} chars")
                     
                     email_contents.append(email_content)
+                    
+                    # Записати email після успішної генерації
+                    if email:
+                        await self.email_db.record_sent_email(email, company_name, company.get('title', ''))
+                        print(f"✅ Записано відправлений email: {email} для {company_name}")
                 else:
                     # Not suitable - don't generate email, just add empty string
                     email_contents.append("")
@@ -194,5 +219,8 @@ class EmailProcessor:
             
             return output_path
         finally:
+            # Закрити підключення до БД
+            if self.email_db and self.email_db.db_connector:
+                await self.email_db.db_connector.disconnect()
             await self.finish_process()
 

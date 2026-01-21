@@ -2,6 +2,7 @@ import aiosqlite
 import asyncio
 import logging
 from typing import List, Dict, Optional
+from datetime import datetime, timedelta
 
 from config import SQL_LITE_LOG_PATH
 from modules.MainLogger.logger import setup_logger_from_yaml
@@ -178,6 +179,81 @@ class AsyncAdvertsDatabase:
         query = f"DELETE FROM {self.database_table} WHERE id = ?"
         await self.db_connector.execute_query(query, (contact_id,))
         print(f"Оголошення з ID {contact_id} видалено.")
+
+class EmailDatabase:
+    """
+    Асинхронний клас для роботи з відправленими email в SQLite базі даних.
+    """
+    
+    def __init__(self, db_connector: AsyncSQLiteConnector):
+        self.db_connector = db_connector
+        self.table_name = "sent_emails"
+    
+    async def init_table(self):
+        """Створює таблицю для збереження відправлених email якщо її немає."""
+        query = f"""
+        CREATE TABLE IF NOT EXISTS {self.table_name} (
+            email TEXT PRIMARY KEY,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            company_name TEXT,
+            job_title TEXT
+        )
+        """
+        await self.db_connector.execute_query(query)
+        logger_t.info(f"Таблиця {self.table_name} готова.")
+    
+    async def get_last_sent_date(self, email: str) -> Optional[datetime]:
+        """Отримує дату останньої відправки на email."""
+        query = f"SELECT sent_at FROM {self.table_name} WHERE email = ?"
+        result = await self.db_connector.fetch_one(query, (email,))
+        if result and result.get('sent_at'):
+            try:
+                # Парсити timestamp з SQLite
+                sent_at_str = result['sent_at']
+                if isinstance(sent_at_str, str):
+                    # SQLite зберігає як 'YYYY-MM-DD HH:MM:SS'
+                    return datetime.strptime(sent_at_str, '%Y-%m-%d %H:%M:%S')
+                return datetime.fromisoformat(sent_at_str)
+            except Exception as e:
+                logger_t.error(f"Помилка парсингу дати: {e}")
+                return None
+        return None
+    
+    async def can_send_email(self, email: str) -> bool:
+        """
+        Перевіряє чи можна відправляти email (чи пройшло 3+ місяці з останньої відправки).
+        
+        Returns:
+            True якщо можна відправляти (ніколи не відправляли або пройшло 3+ місяці)
+            False якщо не можна (відправляли менше 3 місяців тому)
+        """
+        if not email or not email.strip():
+            return True  # Якщо email порожній - можна обробляти
+        
+        last_sent = await self.get_last_sent_date(email)
+        if not last_sent:
+            return True  # Ніколи не відправляли - можна
+        
+        three_months_ago = datetime.now() - timedelta(days=90)
+        can_send = last_sent < three_months_ago
+        
+        if not can_send:
+            days_passed = (datetime.now() - last_sent).days
+            logger_t.info(f"Email {email} відправлявся {days_passed} днів тому. Потрібно чекати ще {90 - days_passed} днів.")
+        
+        return can_send
+    
+    async def record_sent_email(self, email: str, company_name: str = '', job_title: str = ''):
+        """Записує email після відправки."""
+        if not email or not email.strip():
+            return
+        
+        query = f"""
+        INSERT OR REPLACE INTO {self.table_name} (email, sent_at, company_name, job_title)
+        VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+        """
+        await self.db_connector.execute_query(query, (email.strip(), company_name, job_title))
+        logger_t.info(f"Записано відправлений email: {email} для {company_name}")
 
 # Приклад використання
 async def main_db():
