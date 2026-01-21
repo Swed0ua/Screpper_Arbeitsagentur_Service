@@ -322,6 +322,15 @@ Examples:
                         else:
                             field_values[field] = "N/A"
                 
+                # Перевірити чи template оброблений (має теги)
+                found_tags = re.findall(r'\{\{([A-Z_]+)\}\}', processed_template)
+                
+                if not found_tags:
+                    # FALLBACK: якщо template не оброблений - використати старий метод
+                    print("⚠️ Template not processed (no tags found), using fallback method")
+                    from modules.EmailContentGenerator.template_parser import fill_template
+                    return fill_template(template_content, field_values)
+                
                 # Генерувати JSON зі значеннями для тегів
                 tags_json = await self._generate_tags_content(
                     processed_template,
@@ -668,30 +677,46 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
         Returns:
             (modified_template, tags_description)
         """
-        system_prompt = """You are a template processor. Replace dynamic text content with tags while preserving ALL HTML structure, styles, placeholders, prices, locations.
+        system_prompt = """You are a template processor. Your task is to replace ALL dynamic text content with tags like {{MAIN_MAIL}}, {{INTRO_TEXT}}, etc.
 
-CRITICAL:
-- Keep ALL HTML structure, tags, styles EXACTLY as is
-- Keep ALL {{contact.FIRSTNAME}}, {{contact.COMPANY}} placeholders EXACTLY as is
-- Keep ALL prices, locations, numbers EXACTLY as is
-- Keep footer, header, cards structure EXACTLY as is
-- Only replace DYNAMIC TEXT CONTENT with tags like {{MAIN_MAIL}}, {{INTRO_TEXT}}, etc.
+CRITICAL RULES:
+1. Keep ALL HTML structure, tags, styles, attributes EXACTLY as is
+2. Keep ALL {{contact.FIRSTNAME}}, {{contact.COMPANY}} placeholders EXACTLY as is - DO NOT TOUCH THEM
+3. Keep ALL prices, locations, numbers, specific data EXACTLY as is
+4. Keep footer, header, section titles EXACTLY as is
+5. REPLACE ONLY the dynamic text paragraphs with tags
+
+EXAMPLE:
+BEFORE: <p>ich hoffe, diese Nachricht erreicht Sie in bester Verfassung. Wir möchten Ihnen ein einzigartiges Angebot...</p>
+AFTER: <p>{{MAIN_MAIL}}</p>
 
 Return JSON:
 {
-  "template": "modified HTML with tags",
+  "template": "full modified HTML with tags",
   "tags": {
-    "{{MAIN_MAIL}}": "1-2 sentence description of what should be here",
-    "{{INTRO_TEXT}}": "1-2 sentence description",
+    "{{MAIN_MAIL}}": "Main intro paragraph (2-3 sentences about company appreciation and cooperation interest)",
+    "{{INTRO_TEXT}}": "Additional intro text (1-2 sentences)",
     ...
   }
 }"""
         
-        user_prompt = f"""Process this HTML template. Replace dynamic text with tags ({{TAG_NAME}}). Keep structure, styles, placeholders, data.
+        user_prompt = f"""Process this HTML template. Find ALL dynamic text paragraphs and replace them with tags.
 
+FIND AND REPLACE:
+- Text like "ich hoffe, diese Nachricht erreicht Sie..." → {{MAIN_MAIL}}
+- Text like "Wir möchten Ihnen..." → {{INTRO_TEXT}}
+- Any other dynamic personalized text → {{TAG_NAME}}
+
+KEEP UNCHANGED:
+- {{contact.FIRSTNAME}}, {{contact.COMPANY}} - DO NOT TOUCH
+- Prices, numbers, locations
+- Section headers like "Vorteile unseres Angebots"
+- HTML structure
+
+Template:
 {template_content}
 
-Return JSON with modified template and tags description."""
+Return JSON with FULL modified template (all HTML) and tags description."""
         
         response = await self.client.chat.completions.create(
             model=self.model,
@@ -699,7 +724,7 @@ Return JSON with modified template and tags description."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.3,
+            temperature=0.2,  # Нижче для точності
             response_format={"type": "json_object"}
         )
         
@@ -707,28 +732,43 @@ Return JSON with modified template and tags description."""
         modified_template = result.get('template', template_content)
         tags_description = result.get('tags', {})
         
-        # Зберегти оброблений template
+        # ПЕРЕВІРКА чи теги створені
+        found_tags = re.findall(r'\{\{([A-Z_]+)\}\}', modified_template)
+        
+        if not found_tags:
+            print("❌ ERROR: AI did not create tags! Returning original template.")
+            print(f"Template length: {len(modified_template)}")
+            return template_content, {}
+        
+        print(f"✅ Found {len(found_tags)} tags: {found_tags}")
+        
+        # Зберегти
+        self.temp_template_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.temp_template_path, 'w', encoding='utf-8') as f:
             f.write(modified_template)
         
-        # Зберегти опис тегів
         self.tags_description = tags_description
         
-        print(f"Template processed and saved to {self.temp_template_path}")
-        print(f"Tags created: {list(tags_description.keys())}")
+        print(f"✅ Template saved: {self.temp_template_path.absolute()}")
+        print(f"✅ Tags: {list(tags_description.keys())}")
         
         return modified_template, tags_description
     
     async def _get_processed_template(self, original_template: str) -> str:
         """Отримує оброблений template (з тегами) або обробляє якщо немає."""
+        print(f"🔍 Checking for processed template: {self.temp_template_path.absolute()}")
+        
         if self.temp_template_path.exists():
-            # Читати збережений оброблений template
+            print(f"✅ Found existing processed template")
             with open(self.temp_template_path, 'r', encoding='utf-8') as f:
-                return f.read()
+                content = f.read()
+                print(f"📊 Loaded template: {len(content)} chars")
+                return content
         else:
-            # Обробити template один раз
+            print(f"🔄 Processing template for the first time...")
             processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
             self.tags_description = tags_desc
+            print(f"📊 Processed template: {len(processed_template)} chars")
             return processed_template
     
     async def _generate_tags_content(
@@ -745,7 +785,16 @@ Return JSON with modified template and tags description."""
         tags = re.findall(r'\{\{([A-Z_]+)\}\}', template_with_tags)
         unique_tags = list(set(tags))
         
+        print(f"🔍 Searching for tags in template ({len(template_with_tags)} chars)")
+        print(f"🔍 Found tags: {unique_tags}")
+        
         if not unique_tags:
+            print("❌ ERROR: No tags found! Template might not be processed.")
+            print("Template preview (first 500 chars):")
+            print(template_with_tags[:500])
+            # Шукати всі можливі теги для дебагу
+            all_tags = re.findall(r'\{\{([^}]+)\}\}', template_with_tags)
+            print(f"🔍 All {{}} patterns found: {all_tags[:10]}")
             return {}
         
         firstname = field_values.get('contact.FIRSTNAME', field_values.get('FIRSTNAME', ''))
@@ -794,15 +843,23 @@ Professional, warm tone. German language. Return JSON with tag names as keys."""
         """Підставляє значення з JSON та field_values в template."""
         result = template
         
+        print(f"📝 Filling template: {len(template)} chars, {len(tags_json)} tags to fill")
+        
         # Підставити значення з tags_json ({{MAIN_MAIL}} тощо)
         for tag, value in tags_json.items():
             # Додати {{ }} якщо немає
             tag_with_braces = tag if tag.startswith('{{') else f'{{{{{tag}}}}}'
-            result = result.replace(tag_with_braces, value)
+            if tag_with_braces in result:
+                result = result.replace(tag_with_braces, value)
+                print(f"✅ Replaced {tag_with_braces}")
+            else:
+                print(f"⚠️ Tag {tag_with_braces} not found in template")
         
         # Підставити значення з field_values ({{contact.FIRSTNAME}} тощо)
         from modules.EmailContentGenerator.template_parser import fill_template
         result = fill_template(result, field_values)
+        
+        print(f"📊 Final template length: {len(result)} chars")
         
         return result
     
