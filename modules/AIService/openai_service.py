@@ -23,6 +23,7 @@ class OpenAIService:
         self.model = model
         self.temp_template_path = Path("temporary_file.html")
         self.tags_description = {}
+        self._template_processed = False  # Флаг чи template вже оброблений в цій сесії
     
     async def research_company(
         self, 
@@ -732,44 +733,89 @@ Return JSON with FULL modified template (all HTML) and tags description."""
         modified_template = result.get('template', template_content)
         tags_description = result.get('tags', {})
         
+        print(f"📋 AI response received")
+        print(f"📋 Modified template length: {len(modified_template)} chars")
+        print(f"📋 Original template length: {len(template_content)} chars")
+        print(f"📋 Tags description keys: {list(tags_description.keys())}")
+        
         # ПЕРЕВІРКА чи теги створені
         found_tags = re.findall(r'\{\{([A-Z_]+)\}\}', modified_template)
         
         if not found_tags:
             print("❌ ERROR: AI did not create tags! Returning original template.")
             print(f"Template length: {len(modified_template)}")
+            print(f"Template preview (first 1000 chars): {modified_template[:1000]}")
             return template_content, {}
         
         print(f"✅ Found {len(found_tags)} tags: {found_tags}")
         
-        # Зберегти
+        # Створити директорію якщо немає
         self.temp_template_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.temp_template_path, 'w', encoding='utf-8') as f:
-            f.write(modified_template)
+        print(f"📁 Directory ready: {self.temp_template_path.parent.absolute()}")
+        
+        # Зберегти файл
+        try:
+            with open(self.temp_template_path, 'w', encoding='utf-8') as f:
+                f.write(modified_template)
+            print(f"✅ Template file written: {self.temp_template_path.absolute()}")
+            print(f"✅ File size: {self.temp_template_path.stat().st_size} bytes")
+        except Exception as e:
+            print(f"❌ CRITICAL ERROR saving file: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Перевірити що файл створений
+        if not self.temp_template_path.exists():
+            print(f"❌ CRITICAL ERROR: File does not exist after write!")
+            raise Exception("File was not created after write operation!")
         
         self.tags_description = tags_description
         
-        print(f"✅ Template saved: {self.temp_template_path.absolute()}")
-        print(f"✅ Tags: {list(tags_description.keys())}")
+        print(f"✅ Template processing COMPLETE")
+        print(f"✅ File path: {self.temp_template_path.absolute()}")
+        print(f"✅ Tags created: {list(tags_description.keys())}")
         
         return modified_template, tags_description
     
     async def _get_processed_template(self, original_template: str) -> str:
         """Отримує оброблений template (з тегами) або обробляє якщо немає."""
         print(f"🔍 Checking for processed template: {self.temp_template_path.absolute()}")
+        print(f"🔍 Template processed flag: {self._template_processed}")
+        print(f"🔍 File exists: {self.temp_template_path.exists()}")
         
-        if self.temp_template_path.exists():
-            print(f"✅ Found existing processed template")
+        # Якщо template вже оброблений в цій сесії - читати з файлу
+        if self._template_processed and self.temp_template_path.exists():
+            print(f"✅ Using existing processed template from this session")
             with open(self.temp_template_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 print(f"📊 Loaded template: {len(content)} chars")
                 return content
-        else:
-            print(f"🔄 Processing template for the first time...")
-            processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
-            self.tags_description = tags_desc
-            print(f"📊 Processed template: {len(processed_template)} chars")
-            return processed_template
+        
+        # ПЕРШИЙ РАЗ - ОБОВ'ЯЗКОВО обробити template
+        print(f"🔄 Processing template (FIRST TIME in this session)...")
+        print(f"📋 Original template length: {len(original_template)} chars")
+        
+        # Видалити старий файл якщо є
+        if self.temp_template_path.exists():
+            print(f"🗑️ Deleting old template file")
+            self.temp_template_path.unlink()
+        
+        # Обробити template
+        print(f"🚀 Starting template processing...")
+        processed_template, tags_desc = await self.prepare_template_with_tags(original_template)
+        self.tags_description = tags_desc
+        self._template_processed = True  # Позначити що оброблено
+        
+        print(f"📊 Processed template: {len(processed_template)} chars")
+        print(f"✅ Template file MUST be created: {self.temp_template_path.absolute()}")
+        print(f"✅ File exists after processing: {self.temp_template_path.exists()}")
+        
+        if not self.temp_template_path.exists():
+            print(f"❌ CRITICAL ERROR: File was not created!")
+            raise Exception("Template file was not created!")
+        
+        return processed_template
     
     async def _generate_tags_content(
         self,
