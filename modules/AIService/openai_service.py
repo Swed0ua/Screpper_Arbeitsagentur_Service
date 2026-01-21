@@ -358,7 +358,7 @@ Return complete HTML with ALL original content preserved."""
                             {"role": "user", "content": user_prompt}
                         ],
                         temperature=0.6,
-                        max_tokens=8000  # Збільшити для повного HTML
+                        max_tokens=16000
                     )
                     print(f"📥 Received AI response")
                     
@@ -716,6 +716,16 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
             # Fallback: return basic text
             return f"Guten Tag, {firstname if firstname else ''}\n\nWir möchten Ihnen ein Angebot für {company_name} präsentieren."
     
+    def _extract_dynamic_section(self, template: str) -> tuple[str, int]:
+        """
+        Витягує частину template з динамічним текстом.
+        
+        Returns:
+            (section, start_position) - повертає весь template
+        """
+        # Повертаємо весь template без обрізання
+        return template, 0
+    
     async def prepare_template_with_tags(self, template_content: str) -> tuple[str, dict]:
         """
         Один раз обробляє template: замінює динамічний текст на теги.
@@ -788,20 +798,47 @@ Return JSON with FULL modified template (all HTML) and tags description."""
             except json.JSONDecodeError as e:
                 print(f"❌ CRITICAL: Failed to parse AI JSON response!")
                 print(f"❌ JSON Error: {e}")
-                print(f"📋 First 500 chars of response: {ai_content[:500]}")
-                raise Exception(f"AI returned invalid JSON: {e}")
+                print(f"📋 First 1000 chars of response: {ai_content[:1000]}")
+                
+                # Спробувати виправити JSON - знайти JSON об'єкт в тексті
+                try:
+                    import re
+                    # Шукати JSON об'єкт між { }
+                    json_match = re.search(r'\{.*\}', ai_content, re.DOTALL)
+                    if json_match:
+                        fixed_json = json_match.group(0)
+                        # Спробувати виправити незакриті лапки в HTML
+                        # Замінити проблемні символи
+                        fixed_json = fixed_json.replace('\n', '\\n').replace('\r', '\\r')
+                        # Спробувати парсити
+                        result = json.loads(fixed_json)
+                        print(f"✅ Fixed JSON manually")
+                    else:
+                        raise
+                except Exception as e2:
+                    print(f"❌ Could not fix JSON: {e2}")
+                    # Використати оригінальний template якщо не вдалося виправити
+                    modified_template = template_content
+                    tags_description = {}
+                    # Продовжити виконання замість raise
+                    result = {}
             
-            modified_template = result.get('template', '')
-            tags_description = result.get('tags', {})
-            
-            # КРИТИЧНА ПЕРЕВІРКА
-            if not modified_template:
-                print(f"❌ CRITICAL: AI returned EMPTY template!")
-                print(f"📋 Result keys: {list(result.keys())}")
-                print(f"📋 Tags description: {tags_description}")
-                # Використати оригінальний template якщо AI не повернув
+            # Перевірити чи result не порожній (якщо була помилка JSON)
+            if not result:
                 modified_template = template_content
                 tags_description = {}
+            else:
+                modified_template = result.get('template', '')
+                tags_description = result.get('tags', {})
+                
+                # КРИТИЧНА ПЕРЕВІРКА
+                if not modified_template:
+                    print(f"❌ CRITICAL: AI returned EMPTY template!")
+                    print(f"📋 Result keys: {list(result.keys())}")
+                    print(f"📋 Tags description: {tags_description}")
+                    # Використати оригінальний template якщо AI не повернув
+                    modified_template = template_content
+                    tags_description = {}
             
             print(f"📋 Modified template length: {len(modified_template)} chars")
             print(f"📋 Original template length: {len(template_content)} chars")
