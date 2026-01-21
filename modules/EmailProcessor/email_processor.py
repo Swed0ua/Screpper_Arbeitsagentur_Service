@@ -32,6 +32,7 @@ class EmailProcessor:
         self.template_path = template_path
         self.template_content = None
         self.template_fields = None
+        self._first_html_saved = False  # Флаг чи вже збережено перший HTML
         self.email_db = None  # Ініціалізується в process_file
         
         # Load template if provided
@@ -188,6 +189,16 @@ class EmailProcessor:
                             print(f"  Difference: {expected_length - html_length} chars")
                     
                     email_contents.append(email_content)
+                    
+                    # Зберегти перший непустий HTML для перевірки
+                    if not self._first_html_saved and email_content and email_content.strip():
+                        try:
+                            with open('t1.html', 'w', encoding='utf-8') as f:
+                                f.write(email_content)
+                            print(f"✅ Збережено перший HTML в t1.html ({len(email_content)} chars) для {company_name}")
+                            self._first_html_saved = True
+                        except Exception as e:
+                            print(f"⚠️ Помилка збереження t1.html: {e}")
                     
                     # Записати email після успішної генерації
                     if email:

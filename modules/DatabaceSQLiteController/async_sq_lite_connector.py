@@ -15,7 +15,7 @@ class AsyncSQLiteConnector:
     """
     Асинхронний клас для роботи з SQLite базою даних.
     """
-
+    
     def __init__(self, file_name: str):
         """
         Ініціалізація AsyncSQLiteConnector.
