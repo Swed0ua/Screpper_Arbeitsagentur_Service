@@ -156,8 +156,10 @@ class ExcelProcessor:
         
         for col in html_columns:
             if col not in self.df.columns:
+                print(f"⚠️ Column '{col}' not found in DataFrame, skipping")
                 continue
             
+            print(f"Checking column '{col}' for splitting...")
             max_parts = 1
             for idx, value in self.df[col].items():
                 if pd.notna(value):
@@ -165,11 +167,14 @@ class ExcelProcessor:
                     if len(value_str) > CHUNK_SIZE:
                         num_parts = math.ceil(len(value_str) / CHUNK_SIZE)
                         max_parts = max(max_parts, num_parts)
+                        print(f"  Row {idx}: {len(value_str)} chars, needs {num_parts} parts")
             
             if max_parts > 1:
                 max_parts_needed[col] = max_parts
                 max_content_len = self.df[col].astype(str).str.len().max()
-                print(f"Column '{col}' will be split into {max_parts} parts (max content: {max_content_len} chars)")
+                print(f"✅ Column '{col}' will be split into {max_parts} parts (max content: {max_content_len} chars)")
+            else:
+                print(f"ℹ️ Column '{col}' does not need splitting (all values <= {CHUNK_SIZE} chars)")
         
         # Створюємо нові колонки для частин та заповнюємо їх
         for col, num_parts in max_parts_needed.items():
@@ -217,14 +222,18 @@ class ExcelProcessor:
         save_path = output_path or self.file_path
         file_extension = os.path.splitext(save_path)[1].lower()
         
+        # Завжди викликати розбиття (для Excel і CSV)
+        print("Preparing DataFrame: splitting long HTML content into multiple columns...")
+        print(f"DataFrame columns before splitting: {list(self.df.columns)}")
+        print(f"DataFrame shape: {self.df.shape}")
+        self._prepare_dataframe_for_excel()
+        print(f"DataFrame columns after splitting: {list(self.df.columns)}")
+        
         if file_extension == '.csv':
             # For CSV, ensure HTML is properly saved (no truncation)
             self.df.to_csv(save_path, index=False, encoding='utf-8', quoting=csv.QUOTE_ALL)
             print(f"File saved: {save_path}")
         else:
-            # Для Excel - спочатку підготовка DataFrame (розбиття довгих HTML)
-            print("Preparing DataFrame: splitting long HTML content into multiple columns...")
-            self._prepare_dataframe_for_excel()
             
             # Використовуємо openpyxl напряму
             from openpyxl import Workbook
