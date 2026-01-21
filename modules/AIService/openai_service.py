@@ -39,78 +39,37 @@ class OpenAIService:
             Dictionary with researched information for each field
         """
         try:
-            # МАКСИМАЛЬНО АГРЕСИВНИЙ промпт - ОБОВ'ЯЗКОВО шукати
-            system_prompt = """You are an expert company researcher. Your ONLY job is to FIND information, NOT return "N/A".
-
-MANDATORY REQUIREMENTS:
-- You MUST search for FIRSTNAME and LASTNAME for EVERY company
-- Search CEO, founder, managing director, owner, Geschäftsführer
-- Search company website, LinkedIn, business registries, Handelsregister
-- Search parent companies, subsidiaries, franchise owners
-- Try ALL possible search strategies before giving up
-- "N/A" is ONLY allowed if you searched EVERYTHING and found NOTHING
-- If you find even PARTIAL info (just first name OR last name), provide it
-- DO NOT be lazy - SEARCH ACTIVELY"""
-            
-            # Build user prompt with required fields
-            user_prompt = f"""Research this company: {company_name}
-            
-            Available information from job posting:
-            - Job title: {company_info.get('title', 'N/A')}
-            - Location: {company_info.get('location', 'N/A')}
-            - Type of employment: {company_info.get('type_offer', 'N/A')}
-            - Company name: {company_name}
-            
-            Required information to find:"""
+            system_prompt = """Find company executive names (CEO/founder/owner). Search: website, LinkedIn, Handelsregister. Determine industry and suitability. Return JSON."""
             
             if required_fields:
                 fields_list = ", ".join(sorted(required_fields))
-                user_prompt += f"""
-                
-            REQUIRED TEMPLATE FIELDS TO FILL:
-            {fields_list}
-            
-            MANDATORY TASK: Find executives for company: {company_name}
-            
-            CRITICAL INSTRUCTIONS:
-            1. COMPANY: Use exact name: "{company_name}"
-            
-            2. FIRSTNAME/LASTNAME - MANDATORY SEARCH (DO NOT RETURN "N/A" WITHOUT SEARCHING):
-               - Search: "{company_name} CEO"
-               - Search: "{company_name} founder"
-               - Search: "{company_name} Geschäftsführer"
-               - Search: "{company_name} owner"
-               - Search: "{company_name} managing director"
-               - Search: "{company_name} Vorstand"
-               - Check company website
-               - Check LinkedIn company page
-               - Check Handelsregister (German commercial register)
-               - If franchise/chain: search regional owner/manager
-               - If subsidiary: search parent company executives
-               - Try company name variations (with/without GmbH, Ltd, etc.)
-               - Search business registries and public records
-               - Check press releases, news articles about the company
-            
-            3. DO NOT RETURN "N/A" FOR FIRSTNAME/LASTNAME UNLESS YOU SEARCHED EVERYTHING
-            
-            Return your findings in this EXACT JSON format:
-            {{
-              "contact": {{
-                "COMPANY": "{company_name}",
-                "FIRSTNAME": "MUST SEARCH - find CEO/founder/owner first name",
-                "LASTNAME": "MUST SEARCH - find CEO/founder/owner last name",
-                "unsubscribe": "N/A"
-              }}
-            }}
-            
-            REMEMBER: SEARCH ACTIVELY. "N/A" only if you searched EVERYTHING and found NOTHING."""
+                user_prompt = f"""Research: {company_name}
+Job: {company_info.get('title', 'N/A')}
+Location: {company_info.get('location', 'N/A')}
+
+Find: {fields_list}
+
+Search: "{company_name} CEO", "{company_name} founder", "{company_name} Geschäftsführer", Handelsregister, LinkedIn.
+
+NOT SUITABLE: Government, Banks, Police, IT companies.
+SUITABLE: All other private companies.
+
+Return JSON:
+{{
+  "contact": {{
+    "COMPANY": "{company_name}",
+    "FIRSTNAME": "CEO/founder first name or N/A",
+    "LASTNAME": "CEO/founder last name or N/A",
+    "unsubscribe": "N/A"
+  }},
+  "industry": "specific industry name",
+  "is_suitable": true or false,
+  "rejection_reason": "reason if not suitable, else empty string"
+}}"""
             else:
-                user_prompt += "\n- Main business activity, industry, and products/services"
-                user_prompt += "\n- Company description (2-3 sentences)"
-            
-            user_prompt += """
-            
-            Format your response as JSON with the structure shown above."""
+                user_prompt = f"""Research: {company_name}
+Find: business activity, industry, description.
+Return JSON with contact info, industry, is_suitable, rejection_reason."""
             
             # Перший запит з більш активною температурою
             response = await self.client.chat.completions.create(
@@ -130,21 +89,16 @@ MANDATORY REQUIREMENTS:
                 research_data = json.loads(research_text)
                 field_values = {}
                 
-                # Додати перевірку сфери діяльності та придатності вакансії
-                suitability_check = await self._check_company_suitability(
-                    company_name, company_info, research_data
-                )
-                field_values['is_suitable'] = suitability_check['is_suitable']
-                field_values['industry'] = suitability_check['industry']
-                field_values['rejection_reason'] = suitability_check.get('rejection_reason', '')
+                # Витягти suitability з research_data
+                field_values['is_suitable'] = research_data.get('is_suitable', False)
+                field_values['industry'] = research_data.get('industry', 'Unknown')
+                field_values['rejection_reason'] = research_data.get('rejection_reason', '')
                 
                 # Витягти значення з JSON структури
                 if 'contact' in research_data:
                     contact_data = research_data['contact']
                     for field in required_fields or []:
-                        # Знайти поле в contact (може бути contact.FIRSTNAME або просто FIRSTNAME)
                         field_key = field.replace('contact.', '') if 'contact.' in field else field
-                        # Також перевірити без префіксу contact
                         if '.' in field_key:
                             field_key = field_key.split('.')[-1]
                         
@@ -155,7 +109,6 @@ MANDATORY REQUIREMENTS:
                         else:
                             field_values[field] = contact_data.get(field_key, "N/A")
                 else:
-                    # Якщо структура інша, спробувати знайти поля безпосередньо
                     for field in required_fields or []:
                         field_key = field.replace('contact.', '') if 'contact.' in field else field
                         if '.' in field_key:
@@ -168,99 +121,13 @@ MANDATORY REQUIREMENTS:
                         else:
                             field_values[field] = "N/A"
                 
-                # ОБОВ'ЯЗКОВИЙ RETRY якщо FIRSTNAME або LASTNAME = "N/A"
-                needs_retry = False
-                for field in required_fields or []:
-                    field_key = field.replace('contact.', '') if 'contact.' in field else field
-                    if '.' in field_key:
-                        field_key = field_key.split('.')[-1]
-                    
-                    if field_key in ['FIRSTNAME', 'LASTNAME']:
-                        current_value = field_values.get(field, "N/A")
-                        if current_value == "N/A" or not current_value or current_value.strip() == "":
-                            needs_retry = True
-                            break
-                
-                # RETRY з максимально агресивним промптом
-                if needs_retry:
-                    retry_system = """You MUST find executive names. This is MANDATORY. Search EVERYWHERE.
-                    - Company websites
-                    - LinkedIn
-                    - Business registries
-                    - News articles
-                    - Press releases
-                    - Company profiles
-                    DO NOT return "N/A" unless you searched EVERYTHING."""
-                    
-                    retry_prompt = f"""URGENT: Find CEO/founder/owner names for: {company_name}
-                    
-                    Location: {company_info.get('location', '')}
-                    
-                    MANDATORY SEARCH QUERIES (try ALL):
-                    1. "{company_name}" CEO
-                    2. "{company_name}" founder
-                    3. "{company_name}" Geschäftsführer
-                    4. "{company_name}" owner
-                    5. "{company_name}" managing director
-                    6. "{company_name}" Vorstand
-                    7. Check if part of larger group - search parent company
-                    8. Check franchise/chain - search regional owner
-                    9. Search Handelsregister (German commercial register)
-                    10. Search company website "Impressum" or "About Us"
-                    
-                    Search your knowledge base THOROUGHLY.
-                    If company is German, check Handelsregister.
-                    If company is retail/chain, check franchise owner.
-                    
-                    Return JSON:
-                    {{
-                      "contact": {{
-                        "FIRSTNAME": "first name - MUST search, not N/A",
-                        "LASTNAME": "last name - MUST search, not N/A"
-                      }}
-                    }}
-                    
-                    CRITICAL: Only "N/A" if you searched EVERYTHING and found NOTHING."""
-                    
-                    try:
-                        retry_response = await self.client.chat.completions.create(
-                            model=self.model,
-                            messages=[
-                                {"role": "system", "content": retry_system},
-                                {"role": "user", "content": retry_prompt}
-                            ],
-                            temperature=0.7,  # Вище для більш креативного пошуку
-                            response_format={"type": "json_object"}
-                        )
-                        
-                        retry_data = json.loads(retry_response.choices[0].message.content)
-                        if 'contact' in retry_data:
-                            retry_contact = retry_data['contact']
-                            # Оновити значення
-                            for field in required_fields or []:
-                                field_key = field.replace('contact.', '') if 'contact.' in field else field
-                                if '.' in field_key:
-                                    field_key = field_key.split('.')[-1]
-                                
-                                if field_key in ['FIRSTNAME', 'LASTNAME']:
-                                    retry_value = retry_contact.get(field_key, "N/A")
-                                    if retry_value and retry_value != "N/A" and retry_value.strip():
-                                        field_values[field] = retry_value
-                    except Exception as retry_error:
-                        print(f"Retry failed: {retry_error}")
-                
                 field_values['_research_text'] = research_text
                 return field_values
             except json.JSONDecodeError:
-                # Якщо не JSON, використати старий метод
                 parsed_values = self._parse_research_to_fields(research_text, required_fields, company_name, company_info)
-                # Додати перевірку придатності навіть якщо JSON не вдалося розпарсити
-                suitability_check = await self._check_company_suitability(
-                    company_name, company_info, {}
-                )
-                parsed_values['is_suitable'] = suitability_check['is_suitable']
-                parsed_values['industry'] = suitability_check['industry']
-                parsed_values['rejection_reason'] = suitability_check.get('rejection_reason', '')
+                parsed_values['is_suitable'] = False
+                parsed_values['industry'] = 'Unknown'
+                parsed_values['rejection_reason'] = 'Failed to parse research data'
                 return parsed_values
             
         except Exception as e:
@@ -271,18 +138,9 @@ MANDATORY REQUIREMENTS:
                     default_values[field] = f"Error: {str(e)}"
             else:
                 default_values['company_description'] = f"Error researching company: {str(e)}"
-            # Додати перевірку придатності навіть при помилці
-            try:
-                suitability_check = await self._check_company_suitability(
-                    company_name, company_info, {}
-                )
-                default_values['is_suitable'] = suitability_check['is_suitable']
-                default_values['industry'] = suitability_check['industry']
-                default_values['rejection_reason'] = suitability_check.get('rejection_reason', '')
-            except:
-                default_values['is_suitable'] = False
-                default_values['industry'] = 'Unknown'
-                default_values['rejection_reason'] = f'Error during research: {str(e)}'
+            default_values['is_suitable'] = False
+            default_values['industry'] = 'Unknown'
+            default_values['rejection_reason'] = f'Error during research: {str(e)}'
             return default_values
     
     async def _check_company_suitability(
@@ -446,35 +304,25 @@ Examples:
         """
         try:
             if template_content:
-                # Extract field values first
-                research_text = company_research.get('_research_text', '')
+                # Використати дані з company_research замість окремого запиту
+                field_values = {}
+                if template_fields:
+                    for field in template_fields:
+                        # Дані вже є в company_research з research_company
+                        if field in company_research:
+                            field_values[field] = company_research[field]
+                        elif 'company' in field.lower():
+                            field_values[field] = company_name
+                        else:
+                            field_values[field] = "N/A"
                 
-                # Use AI to extract specific field values from research
-                field_values = await self._extract_field_values_from_research(
-                    research_text, 
-                    template_fields,
+                # Об'єднати генерацію тексту та заміну в шаблоні в один запит
+                modified_template = await self._generate_and_replace_template(
+                    template_content,
                     company_name,
-                    company_research
-                )
-                
-                # Extract template style/structure (not full content to save tokens)
-                template_style = self._extract_template_style(template_content)
-                
-                # Generate unique personalized text using AI
-                personalized_text = await self._generate_personalized_text(
-                    template_style=template_style,
-                    company_name=company_name,
-                    company_research=company_research,
-                    job_title=job_title,
-                    field_values=field_values
-                )
-                
-                # Replace text content in template while preserving HTML structure
-                modified_template = await self._replace_template_text(
-                    template_content, 
-                    personalized_text,
-                    company_name,
-                    company_research
+                    company_research,
+                    job_title,
+                    field_values
                 )
                 
                 # Fill template placeholders with field values
@@ -807,6 +655,57 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
         except Exception as e:
             # Fallback: return basic text
             return f"Guten Tag, {firstname if firstname else ''}\n\nWir möchten Ihnen ein Angebot für {company_name} präsentieren."
+    
+    async def _generate_and_replace_template(
+        self,
+        template_content: str,
+        company_name: str,
+        company_research: Dict[str, str],
+        job_title: str,
+        field_values: Dict[str, str]
+    ) -> str:
+        """Генерує персоналізований текст та замінює його в шаблоні за один запит."""
+        try:
+            firstname = field_values.get('contact.FIRSTNAME', field_values.get('FIRSTNAME', ''))
+            lastname = field_values.get('contact.LASTNAME', field_values.get('LASTNAME', ''))
+            industry = company_research.get('industry', '')
+            
+            system_prompt = """You are an email template editor. Replace main body text with personalized content. Preserve ALL {{placeholders}}, prices, locations, HTML structure."""
+            
+            user_prompt = f"""Company: {company_name}
+Recipient: {firstname} {lastname}
+Job: {job_title}
+Industry: {industry}
+
+TEMPLATE:
+{template_content}
+
+TASK: Replace ONLY the main introductory text (after greeting) with personalized text about {company_name}'s {industry} business. Keep ALL {{placeholders}}, prices, locations, HTML structure EXACTLY as is.
+
+Return complete HTML."""
+            
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.6
+            )
+            
+            modified_template = response.choices[0].message.content.strip()
+            
+            # Extract HTML if AI wrapped it in markdown code blocks
+            if modified_template.startswith('```html'):
+                modified_template = modified_template.replace('```html', '').replace('```', '').strip()
+            elif modified_template.startswith('```'):
+                modified_template = modified_template.replace('```', '').strip()
+            
+            return modified_template
+            
+        except Exception as e:
+            print(f"Error generating template: {e}")
+            return template_content
     
     async def _replace_template_text(
         self, 
