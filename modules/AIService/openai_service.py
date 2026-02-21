@@ -59,6 +59,8 @@ Search: "{company_name} CEO", "{company_name} founder", "{company_name} Geschäf
 NOT SUITABLE: Government, Banks, Police, IT companies.
 SUITABLE: All other private companies.
 
+EMAIL RULE (critical): Do not use / do not consider valid any email address that contains these words: bewerbung, personal, hr, karriere. If the only contact email you find contains any of these, treat as no valid email and keep searching for another contact (e.g. CEO/founder direct email). Emails with these words are invalid for our campaign.
+
 Return JSON:
 {{
   "contact": {{
@@ -782,7 +784,7 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.2,
-                max_tokens=1006000
+                max_tokens=1006000 
             )
             
             print(f"📥 AI response received")
