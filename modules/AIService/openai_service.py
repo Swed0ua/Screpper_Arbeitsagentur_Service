@@ -360,7 +360,7 @@ Return complete HTML with ALL original content preserved."""
                             {"role": "user", "content": user_prompt}
                         ],
                         temperature=0.6,
-                        max_tokens=1006000
+                        max_tokens=16384
                     )
                     print(f"📥 Received AI response")
                     
@@ -784,7 +784,7 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.2,
-                max_tokens=1006000 
+                max_tokens=16384 
             )
             
             print(f"📥 AI response received")
