@@ -781,8 +781,8 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2
-                # НЕ встановлюємо max_tokens - дозволити AI повернути весь HTML
+                temperature=0.2,
+                max_tokens=1006000
             )
             
             print(f"📥 AI response received")
