@@ -85,7 +85,7 @@ Return JSON with contact info, industry, is_suitable, rejection_reason."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.5,  # Вище для більш активного пошуку
+                temperature=1,
                 response_format={"type": "json_object"}
             )
             
@@ -229,7 +229,7 @@ Examples:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,  # Low temperature for consistent classification
+                temperature=1,
                 response_format={"type": "json_object"}
             )
             
@@ -359,7 +359,7 @@ Return complete HTML with ALL original content preserved."""
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        temperature=0.6,
+                        temperature=1,
                         max_tokens=127000
                     )
                     print(f"📥 Received AI response")
@@ -425,7 +425,7 @@ Return complete HTML with ALL original content preserved."""
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.8
+                    temperature=1
                 )
                 
                 return response.choices[0].message.content
@@ -467,7 +467,7 @@ Return complete HTML with ALL original content preserved."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2
+                temperature=1
             )
             
             # Parse response to extract field values
@@ -708,7 +708,7 @@ Focus on: greeting, appreciation for company's work, interest in cooperation - N
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.8  # Higher for more creativity and uniqueness
+                temperature=1  # Higher for more creativity and uniqueness
             )
             
             generated_text = response.choices[0].message.content.strip()
@@ -783,7 +783,7 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,
+                temperature=1,
                 max_tokens=127000 
             )
             
@@ -1020,7 +1020,7 @@ Professional, warm tone. German language. Return JSON with tag names as keys."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.6,
+            temperature=1,
             response_format={"type": "json_object"},
             max_tokens=500
         )
@@ -1144,7 +1144,7 @@ Return the complete modified HTML template with:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3  # Lower temperature for precise replacement
+                temperature=1
             )
             
             modified_template = response.choices[0].message.content.strip()
