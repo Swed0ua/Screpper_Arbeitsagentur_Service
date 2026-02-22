@@ -360,7 +360,7 @@ Return complete HTML with ALL original content preserved."""
                             {"role": "user", "content": user_prompt}
                         ],
                         temperature=1,
-                        max_tokens=127000
+                        max_completion_tokens=127000
                     )
                     print(f"📥 Received AI response")
                     
@@ -784,7 +784,7 @@ Return the FULL modified HTML template with tags, then add comment at the end wi
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=1,
-                max_tokens=127000 
+                max_completion_tokens=127000 
             )
             
             print(f"📥 AI response received")
@@ -1022,7 +1022,7 @@ Professional, warm tone. German language. Return JSON with tag names as keys."""
             ],
             temperature=1,
             response_format={"type": "json_object"},
-            max_tokens=500
+            max_completion_tokens=500
         )
         
         return json.loads(response.choices[0].message.content)
