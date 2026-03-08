@@ -3,8 +3,16 @@
 import asyncio
 from typing import Optional
 from pathlib import Path
-from config import OPENAI_API_KEY, OPENAI_MODEL, MAX_CONCURRENT_EMAIL_PROCESSES
+from config import (
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    MAX_CONCURRENT_EMAIL_PROCESSES,
+    BREVO_API_KEY,
+    BREVO_SENDER_EMAIL,
+    BREVO_SENDER_NAME,
+)
 from modules.AIService.openai_service import OpenAIService
+from modules.EmailSender.brevo_sender import BrevoSender
 from modules.ExcelProcessor.excel_processor import ExcelProcessor
 from modules.EmailContentGenerator.template_parser import (
     load_template_file, 
@@ -28,6 +36,7 @@ class EmailProcessor:
             template_path: Optional path to HTML template file
         """
         self.ai_service = OpenAIService(api_key=OPENAI_API_KEY, model=OPENAI_MODEL)
+        self.brevo_sender = BrevoSender(BREVO_API_KEY, BREVO_SENDER_EMAIL, BREVO_SENDER_NAME)
         self._progress_callback = None
         self.template_path = template_path
         self.template_content = None
@@ -200,10 +209,18 @@ class EmailProcessor:
                         except Exception as e:
                             print(f"⚠️ Помилка збереження t1.html: {e}")
                     
-                    # Записати email після успішної генерації
-                    if email:
-                        await self.email_db.record_sent_email(email, company_name, company.get('title', ''))
-                        print(f"✅ Записано відправлений email: {email} для {company_name}")
+                    if email and email_content:
+                        try:
+                            subject = company.get('title') or "Angebot"
+                            result = await self.brevo_sender.send_async(
+                                to=[{"email": email, "name": company_name}],
+                                subject=subject,
+                                html_content=email_content,
+                            )
+                            print(f"Brevo send {company_name} ({email}): {result}")
+                            await self.email_db.record_sent_email(email, company_name, company.get('title', ''))
+                        except Exception as e:
+                            print(f"Brevo send failed {company_name} ({email}): {e}")
                 else:
                     # Not suitable - don't generate email, just add empty string
                     email_contents.append("")
