@@ -291,10 +291,12 @@ class EmailProcessor:
                     continue
                 suitable_indices.append(i - 1)
                 research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
-                suitable_researches.append(research_text)
-                suitable_industries.append(industry)
+                suitable_researches.append(research_text.strip() if isinstance(research_text, str) else research_text)
+                suitable_industries.append(industry.strip() if isinstance(industry, str) else industry)
             await self._update_progress(total, total, "Збереження...")
             result_df = processor.df.iloc[suitable_indices].copy()
+            for col in result_df.select_dtypes(include=['object']).columns:
+                result_df[col] = result_df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
             result_df['company_research'] = suitable_researches
             result_df['industry'] = suitable_industries
             processor.df = result_df
