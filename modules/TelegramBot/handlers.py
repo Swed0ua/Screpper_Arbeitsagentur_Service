@@ -374,11 +374,11 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
         # Process file with progress callback
         email_processor = EmailProcessor()
         email_processor.set_progress_callback(progress_callback)
-        output_path = await email_processor.process_file(temp_file_path)
+        output_path = await email_processor.process_file_filter_only(temp_file_path)
 
         # Send result file
         result_file = types.FSInputFile(output_path)
-        await message.answer_document(result_file, caption="✅ Файл оброблено! Додано колонку з email листами.")
+        await message.answer_document(result_file, caption="✅ Файл з підходящими компаніями.")
 
         # Delete progress message
         if progress_msg:

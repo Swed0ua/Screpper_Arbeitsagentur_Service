@@ -252,3 +252,58 @@ class EmailProcessor:
                 await self.email_db.db_connector.disconnect()
             await self.finish_process()
 
+    async def process_file_filter_only(self, file_path: str) -> str:
+        """Перебір файлу: пропуск якщо email < 3 міс, перевірка сфери, збір даних по підходящих. Повертає шлях до Excel лише з підходящими компаніями."""
+        db_connector = AsyncSQLiteConnector("sent_emails_db")
+        await db_connector.connect()
+        self.email_db = EmailDatabase(db_connector)
+        await self.email_db.init_table()
+        try:
+            processor = ExcelProcessor(file_path)
+            await processor.load_file()
+            companies = processor.get_companies_data()
+            total = len(companies)
+            await self._update_progress(0, total, "Початок обробки...")
+            suitable_indices = []
+            suitable_researches = []
+            suitable_industries = []
+            for i, company in enumerate(companies, 1):
+                company_name = company.get('company_name', '').strip()
+                if not company_name:
+                    await self._update_progress(i, total, "Пропущено (немає назви)")
+                    continue
+                email = company.get('email', '').strip()
+                if email:
+                    can_send = await self.email_db.can_send_email(email)
+                    if not can_send:
+                        await self._update_progress(i, total, f"Пропущено: {company_name} (email < 3 міс)")
+                        continue
+                await self._update_progress(i, total, f"Обробка: {company_name}")
+                company_research = await self.ai_service.research_company(
+                    company_name=company_name,
+                    company_info=company,
+                    required_fields=None
+                )
+                is_suitable = company_research.get('is_suitable', False)
+                industry = company_research.get('industry', 'Unknown')
+                if not is_suitable:
+                    await self._update_progress(i, total, f"Пропущено: {company_name}")
+                    continue
+                suitable_indices.append(i - 1)
+                research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
+                suitable_researches.append(research_text)
+                suitable_industries.append(industry)
+            await self._update_progress(total, total, "Збереження...")
+            result_df = processor.df.iloc[suitable_indices].copy()
+            result_df['company_research'] = suitable_researches
+            result_df['industry'] = suitable_industries
+            processor.df = result_df
+            base = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
+            output_path = base + '_suitable.xlsx'
+            await processor.save_file(output_path)
+            return output_path
+        finally:
+            if self.email_db and self.email_db.db_connector:
+                await self.email_db.db_connector.disconnect()
+            await self.finish_process()
+
