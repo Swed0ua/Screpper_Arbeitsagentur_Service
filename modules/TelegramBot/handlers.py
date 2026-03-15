@@ -282,7 +282,7 @@ async def process_file_handler(message: types.Message):
     
     # Route Excel/CSV files to email processor
     if file_extension in ['.csv', '.xlsx', '.xls']:
-        await process_email_file_handler(message)
+        await _run_email_file_processing_old(message)
         return
     
     # Unknown file type
@@ -329,43 +329,16 @@ async def process_template_file_handler(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Помилка при завантаженні шаблону: {str(e)}", parse_mode=ParseMode.HTML)
 
-async def process_email_file_handler(message: types.Message):
-    """
-    Handle file upload for email processing.
-    """
-    if not message.document:
-        await message.answer("Будь ласка, надішліть Excel або CSV файл.", parse_mode=ParseMode.HTML)
-        return
-    
-    file_name = message.document.file_name
-    file_extension = os.path.splitext(file_name)[1].lower()
-    
-    if file_extension not in ['.csv', '.xlsx', '.xls']:
-        await message.answer("Підтримуються тільки файли CSV або Excel (.csv, .xlsx, .xls)", parse_mode=ParseMode.HTML)
-        return
-    
-    # Check if process can be started
-    can_start, active_count = await EmailProcessor.can_start_process()
-    
-    if not can_start:
-        await message.answer(
-            f"❌ Зараз запущений процес обробки.\n\n"
-            f"Паралельний ліміт: {MAX_CONCURRENT_EMAIL_PROCESSES}\n"
-            f"Активних процесів: {active_count}",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    await message.answer("Обробка файлу... Це може зайняти деякий час.", parse_mode=ParseMode.HTML)
-    
+
+async def _run_email_file_processing(message: types.Message, file_name: str) -> None:
     # Progress message
     progress_msg = None
-    
+
     async def progress_callback(current: int, total: int, company_name: str = ""):
         """Update progress in Telegram."""
         nonlocal progress_msg
         from modules.TelegramBot.bot import bot
-        
+
         progress_text = (
             f"📊 Обробка файлу:\n\n"
             f"Оброблено: {current}/{total}\n"
@@ -373,7 +346,7 @@ async def process_email_file_handler(message: types.Message):
             f"Прогрес: {int((current / total) * 100)}%\n\n"
             f"Поточна компанія: {company_name}"
         )
-        
+
         try:
             if progress_msg:
                 await bot.edit_message_text(
@@ -387,43 +360,74 @@ async def process_email_file_handler(message: types.Message):
         except Exception:
             # If edit fails, send new message
             pass
-    
+
     try:
         from modules.TelegramBot.bot import bot
-        
+
         # Download file
         file_info = await bot.get_file(message.document.file_id)
         temp_dir = tempfile.gettempdir()
         temp_file_path = os.path.join(temp_dir, file_name)
-        
+
         await bot.download_file(file_info.file_path, temp_file_path)
-        
+
         # Process file with progress callback
         email_processor = EmailProcessor()
         email_processor.set_progress_callback(progress_callback)
         output_path = await email_processor.process_file(temp_file_path)
-        
+
         # Send result file
         result_file = types.FSInputFile(output_path)
         await message.answer_document(result_file, caption="✅ Файл оброблено! Додано колонку з email листами.")
-        
+
         # Delete progress message
         if progress_msg:
             try:
                 await bot.delete_message(chat_id=message.chat.id, message_id=progress_msg.message_id)
             except:
                 pass
-        
+
         # Cleanup
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
         if os.path.exists(output_path):
             os.remove(output_path)
-            
+
     except Exception as e:
         await message.answer(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)
         print(f"Error processing email file: {e}")
         await EmailProcessor.finish_process()
+
+
+async def _run_email_file_processing_old(message: types.Message):
+    """
+    Handle file upload for email processing.
+    """
+    if not message.document:
+        await message.answer("Будь ласка, надішліть Excel або CSV файл.", parse_mode=ParseMode.HTML)
+        return
+
+    file_name = message.document.file_name
+    file_extension = os.path.splitext(file_name)[1].lower()
+
+    if file_extension not in ['.csv', '.xlsx', '.xls']:
+        await message.answer("Підтримуються тільки файли CSV або Excel (.csv, .xlsx, .xls)", parse_mode=ParseMode.HTML)
+        return
+
+    # Check if process can be started
+    can_start, active_count = await EmailProcessor.can_start_process()
+
+    if not can_start:
+        await message.answer(
+            f"❌ Зараз запущений процес обробки.\n\n"
+            f"Паралельний ліміт: {MAX_CONCURRENT_EMAIL_PROCESSES}\n"
+            f"Активних процесів: {active_count}",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    await message.answer("Обробка файлу... Це може зайняти деякий час.", parse_mode=ParseMode.HTML)
+    await _run_email_file_processing(message, file_name)
 
 # Обробка callback_handler
 async def procc_callback_handler(callback: CallbackQuery, state: FSMContext):
