@@ -293,6 +293,8 @@ class EmailProcessor:
                 research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
                 suitable_researches.append(research_text.strip() if isinstance(research_text, str) else research_text)
                 suitable_industries.append(industry.strip() if isinstance(industry, str) else industry)
+                if email:
+                    await self.email_db.record_sent_email(email, company_name, company.get('title', ''))
             await self._update_progress(total, total, "Збереження...")
             result_df = processor.df.iloc[suitable_indices].copy()
             for col in result_df.select_dtypes(include=['object']).columns:
