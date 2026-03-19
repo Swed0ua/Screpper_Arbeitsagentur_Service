@@ -264,43 +264,93 @@ class EmailProcessor:
             companies = processor.get_companies_data()
             total = len(companies)
             await self._update_progress(0, total, "Початок обробки...")
-            suitable_indices = []
-            suitable_researches = []
-            suitable_industries = []
-            for i, company in enumerate(companies, 1):
-                company_name = company.get('company_name', '').strip()
-                if not company_name:
-                    await self._update_progress(i, total, "Пропущено (немає назви)")
-                    continue
-                email = company.get('email', '').strip()
-                if email:
-                    can_send = await self.email_db.can_send_email(email)
-                    if not can_send:
-                        await self._update_progress(i, total, f"Пропущено: {company_name} (email < 3 міс)")
-                        continue
-                await self._update_progress(i, total, f"Обробка: {company_name}")
-                company_research = await self.ai_service.research_company(
-                    company_name=company_name,
-                    company_info=company,
-                    required_fields=None
-                )
-                is_suitable = company_research.get('is_suitable', False)
-                industry = company_research.get('industry', 'Unknown')
-                if not is_suitable:
-                    await self._update_progress(i, total, f"Пропущено: {company_name}")
-                    continue
-                suitable_indices.append(i - 1)
-                research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
-                suitable_researches.append(research_text.strip() if isinstance(research_text, str) else research_text)
-                suitable_industries.append(industry.strip() if isinstance(industry, str) else industry)
-                if email:
-                    await self.email_db.record_sent_email(email, company_name, company.get('title', ''))
+            # Parallelize AI research (main bottleneck) with a fixed concurrency.
+            # Goal: ~10 simultaneous OpenAI requests so the server waits less on one-by-one processing.
+            concurrency = 10
+            queue: asyncio.Queue = asyncio.Queue()
+
+            for idx, company in enumerate(companies):
+                await queue.put((idx, company))
+            for _ in range(concurrency):
+                await queue.put(None)  # sentinel
+
+            suitable_mask = [False] * total
+            suitable_researches: list[str | None] = [None] * total
+            suitable_industries: list[str | None] = [None] * total
+
+            done_count = 0
+            progress_lock = asyncio.Lock()
+
+            async def worker():
+                nonlocal done_count
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
+
+                    idx, company = item
+                    company_name = str(company.get('company_name', '')).strip()
+                    email = str(company.get('email', '')).strip()
+                    status_line = "Пропущено"
+
+                    try:
+                        if not company_name:
+                            status_line = "Пропущено (немає назви)"
+                        else:
+                            do_ai = True
+                            if email:
+                                can_send = await self.email_db.can_send_email(email)
+                                if not can_send:
+                                    do_ai = False
+                                    status_line = f"Пропущено: {company_name} (email < 3 міс)"
+
+                            if do_ai:
+                                status_line = f"Обробка: {company_name}"
+                                company_research = await self.ai_service.research_company(
+                                    company_name=company_name,
+                                    company_info=company,
+                                    required_fields=None
+                                )
+                                is_suitable = company_research.get('is_suitable', False)
+                                industry = company_research.get('industry', 'Unknown')
+
+                                if not is_suitable:
+                                    status_line = f"Пропущено: {company_name}"
+                                else:
+                                    suitable_mask[idx] = True
+                                    research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
+                                    suitable_researches[idx] = research_text.strip() if isinstance(research_text, str) else research_text
+                                    suitable_industries[idx] = industry.strip() if isinstance(industry, str) else industry
+                                    if email:
+                                        await self.email_db.record_sent_email(
+                                            email,
+                                            company_name,
+                                            company.get('title', '')
+                                        )
+                                    status_line = f"Оброблено: {company_name}"
+                    except Exception:
+                        status_line = f"Помилка: {company_name or 'unknown'}"
+                    finally:
+                        async with progress_lock:
+                            done_count += 1
+                            await self._update_progress(done_count, total, status_line)
+                        queue.task_done()
+
+            workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+            await queue.join()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+            suitable_indices = [i for i, ok in enumerate(suitable_mask) if ok]
+            suitable_researches_filtered = [suitable_researches[i] for i in suitable_indices]
+            suitable_industries_filtered = [suitable_industries[i] for i in suitable_indices]
+
             await self._update_progress(total, total, "Збереження...")
             result_df = processor.df.iloc[suitable_indices].copy()
             for col in result_df.select_dtypes(include=['object']).columns:
                 result_df[col] = result_df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
-            result_df['company_research'] = suitable_researches
-            result_df['industry'] = suitable_industries
+            result_df['company_research'] = suitable_researches_filtered
+            result_df['industry'] = suitable_industries_filtered
             processor.df = result_df
             base = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
             output_path = base + '_suitable.xlsx'
