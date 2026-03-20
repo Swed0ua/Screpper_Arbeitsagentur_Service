@@ -254,9 +254,30 @@ class ExcelProcessor:
                 row_data = []
                 for col in headers:
                     value = row[col]
-                    
-                    if pd.notna(value):
-                        value_str = str(value)
+
+                    # pd.notna(list/array) can return an array of booleans and raise
+                    # "truth value is ambiguous" in conditions. Handle complex types first.
+                    is_missing = False
+                    if value is None:
+                        is_missing = True
+                    elif isinstance(value, (list, tuple, set, dict)):
+                        is_missing = False
+                    else:
+                        try:
+                            is_missing = bool(pd.isna(value))
+                        except Exception:
+                            is_missing = False
+
+                    if not is_missing:
+                        if isinstance(value, (list, tuple, set)):
+                            value_str = ", ".join(str(item) for item in value)
+                        elif hasattr(value, "tolist") and not isinstance(value, str):
+                            try:
+                                value_str = str(value.tolist())
+                            except Exception:
+                                value_str = str(value)
+                        else:
+                            value_str = str(value)
                         
                         # Логування для HTML колонок
                         if 'email_content' in col or 'company_research' in col:
@@ -290,7 +311,7 @@ class ExcelProcessor:
                 for col_num, col_name in enumerate(headers, 1):
                     cell = ws.cell(row=row_num, column=col_num)
                     
-                    if cell.value and isinstance(cell.value, str):
+                    if isinstance(cell.value, str) and cell.value != "":
                         cell.alignment = Alignment(
                             wrap_text=True,
                             vertical='top',
