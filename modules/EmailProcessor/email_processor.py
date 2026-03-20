@@ -265,8 +265,8 @@ class EmailProcessor:
             total = len(companies)
             await self._update_progress(0, total, "Початок обробки...")
             # Parallelize AI research (main bottleneck) with a fixed concurrency.
-            # Goal: ~10 simultaneous OpenAI requests so the server waits less on one-by-one processing.
-            concurrency = 10
+            # Keep it low to avoid OpenAI 429 rate limits and Telegram flooding.
+            concurrency = 3
             queue: asyncio.Queue = asyncio.Queue()
 
             for idx, company in enumerate(companies):

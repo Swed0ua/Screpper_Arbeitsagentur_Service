@@ -334,10 +334,21 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
     # Progress message
     progress_msg = None
 
+    # Throttle Telegram message edits to avoid flood control.
+    # With parallel workers progress updates can arrive too frequently.
+    last_progress_update_ts = 0.0
+    min_progress_update_seconds = 2.0
+
     async def progress_callback(current: int, total: int, company_name: str = ""):
         """Update progress in Telegram."""
-        nonlocal progress_msg
+        nonlocal progress_msg, last_progress_update_ts
         from modules.TelegramBot.bot import bot
+
+        now_ts = asyncio.get_running_loop().time()
+        # Always allow the first message; then rate-limit edits.
+        if progress_msg is not None and (now_ts - last_progress_update_ts) < min_progress_update_seconds:
+            return
+        last_progress_update_ts = now_ts
 
         progress_text = (
             f"📊 Обробка файлу:\n\n"
