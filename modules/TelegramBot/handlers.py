@@ -9,6 +9,7 @@ from aiogram import types
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram import F
 
 from initial import DBHandler, WebScraperHandler
@@ -339,6 +340,22 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
     last_progress_update_ts = 0.0
     min_progress_update_seconds = 2.0
 
+    async def _send_text_with_retry(text: str, parse_mode=ParseMode.HTML):
+        """Send text message with Telegram flood-control retry."""
+        try:
+            await message.answer(text, parse_mode=parse_mode)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            await message.answer(text, parse_mode=parse_mode)
+
+    async def _send_document_with_retry(document, caption: str = ""):
+        """Send document with Telegram flood-control retry."""
+        try:
+            await message.answer_document(document, caption=caption)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            await message.answer_document(document, caption=caption)
+
     async def progress_callback(current: int, total: int, company_name: str = ""):
         """Update progress in Telegram."""
         nonlocal progress_msg, last_progress_update_ts
@@ -389,7 +406,7 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
 
         # Send result file
         result_file = types.FSInputFile(output_path)
-        await message.answer_document(result_file, caption="✅ Файл з підходящими компаніями.")
+        await _send_document_with_retry(result_file, caption="✅ Файл з підходящими компаніями.")
 
         # Delete progress message
         if progress_msg:
@@ -405,7 +422,7 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
             os.remove(output_path)
 
     except Exception as e:
-        await message.answer(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)
+        await _send_text_with_retry(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)
         print(f"Error processing email file: {e}")
         await EmailProcessor.finish_process()
 
