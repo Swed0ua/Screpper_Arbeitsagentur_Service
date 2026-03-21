@@ -266,7 +266,8 @@ class EmailProcessor:
             # Повна копія для загального звіту (усі рядки як у вхідному файлі)
             full_report_df = processor.df.copy()
             await self._update_progress(0, total, "Початок обробки...")
-            concurrency = 3
+            # Temporary set concurrency to 1 for debugging
+            concurrency = 1
             queue: asyncio.Queue = asyncio.Queue()
 
             for idx, company in enumerate(companies):
