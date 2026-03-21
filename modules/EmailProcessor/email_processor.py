@@ -252,8 +252,8 @@ class EmailProcessor:
                 await self.email_db.db_connector.disconnect()
             await self.finish_process()
 
-    async def process_file_filter_only(self, file_path: str) -> str:
-        """Перебір файлу: пропуск якщо email < 3 міс, перевірка сфери, збір даних по підходящих. Повертає шлях до Excel лише з підходящими компаніями."""
+    async def process_file_filter_only(self, file_path: str) -> tuple[str, str]:
+        """Фільтр: підходящі в окремий файл + повний звіт з усіма рядками та колонками причини/AI."""
         db_connector = AsyncSQLiteConnector("sent_emails_db")
         await db_connector.connect()
         self.email_db = EmailDatabase(db_connector)
@@ -263,9 +263,9 @@ class EmailProcessor:
             await processor.load_file()
             companies = processor.get_companies_data()
             total = len(companies)
+            # Повна копія для загального звіту (усі рядки як у вхідному файлі)
+            full_report_df = processor.df.copy()
             await self._update_progress(0, total, "Початок обробки...")
-            # Parallelize AI research (main bottleneck) with a fixed concurrency.
-            # Keep it low to avoid OpenAI 429 rate limits and Telegram flooding.
             concurrency = 3
             queue: asyncio.Queue = asyncio.Queue()
 
@@ -277,6 +277,10 @@ class EmailProcessor:
             suitable_mask = [False] * total
             suitable_researches: list[str | None] = [None] * total
             suitable_industries: list[str | None] = [None] * total
+            # Для кожного рядка — звіт
+            row_skip_reason: list[str] = [""] * total
+            row_industry_ai: list[str] = [""] * total
+            row_research_ai: list[str] = [""] * total
 
             done_count = 0
             progress_lock = asyncio.Lock()
@@ -297,6 +301,7 @@ class EmailProcessor:
                     try:
                         if not company_name:
                             status_line = "Пропущено (немає назви)"
+                            row_skip_reason[idx] = "Немає назви роботодавця"
                         else:
                             do_ai = True
                             if email:
@@ -304,6 +309,7 @@ class EmailProcessor:
                                 if not can_send:
                                     do_ai = False
                                     status_line = f"Пропущено: {company_name} (email < 3 міс)"
+                                    row_skip_reason[idx] = "Email відправлявся менше 3 місяців тому (не робимо AI)"
 
                             if do_ai:
                                 status_line = f"Обробка: {company_name}"
@@ -314,14 +320,24 @@ class EmailProcessor:
                                 )
                                 is_suitable = company_research.get('is_suitable', False)
                                 industry = company_research.get('industry', 'Unknown')
+                                research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
+                                if isinstance(research_text, str):
+                                    research_text = research_text.strip()
+                                else:
+                                    research_text = str(research_text) if research_text is not None else ""
+                                ind_str = industry.strip() if isinstance(industry, str) else str(industry or "")
+                                row_industry_ai[idx] = ind_str
+                                row_research_ai[idx] = research_text
 
                                 if not is_suitable:
                                     status_line = f"Пропущено: {company_name}"
+                                    rr = company_research.get('rejection_reason', '')
+                                    row_skip_reason[idx] = (str(rr).strip() if rr else "Не підходить за критеріями AI")
                                 else:
                                     suitable_mask[idx] = True
-                                    research_text = company_research.get('_research_text', '') or company_research.get('company_description', '')
-                                    suitable_researches[idx] = research_text.strip() if isinstance(research_text, str) else research_text
-                                    suitable_industries[idx] = industry.strip() if isinstance(industry, str) else industry
+                                    suitable_researches[idx] = research_text
+                                    suitable_industries[idx] = ind_str
+                                    row_skip_reason[idx] = "Підходить"
                                     if email:
                                         await self.email_db.record_sent_email(
                                             email,
@@ -329,8 +345,9 @@ class EmailProcessor:
                                             company.get('title', '')
                                         )
                                     status_line = f"Оброблено: {company_name}"
-                    except Exception:
+                    except Exception as ex:
                         status_line = f"Помилка: {company_name or 'unknown'}"
+                        row_skip_reason[idx] = f"Помилка обробки: {ex}"
                     finally:
                         async with progress_lock:
                             done_count += 1
@@ -346,16 +363,27 @@ class EmailProcessor:
             suitable_industries_filtered = [suitable_industries[i] for i in suitable_indices]
 
             await self._update_progress(total, total, "Збереження...")
+            base = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
+
+            # Загальний звіт: усі рядки + 3 колонки
+            full_report_df["Чому пропущено / статус"] = row_skip_reason
+            full_report_df["Галузь (знайдено AI)"] = row_industry_ai
+            full_report_df["Спеціалізація / дослідження (AI)"] = row_research_ai
+            report_processor = ExcelProcessor(file_path)
+            report_processor.df = full_report_df
+            report_path = base + "_zahalnyy_zvit.xlsx"
+            await report_processor.save_file(report_path)
+
+            # Файл лише з підходящими (може бути 0 рядків)
             result_df = processor.df.iloc[suitable_indices].copy()
             for col in result_df.select_dtypes(include=['object']).columns:
                 result_df[col] = result_df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
             result_df['company_research'] = suitable_researches_filtered
             result_df['industry'] = suitable_industries_filtered
             processor.df = result_df
-            base = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
-            output_path = base + '_suitable.xlsx'
-            await processor.save_file(output_path)
-            return output_path
+            suitable_path = base + '_suitable.xlsx'
+            await processor.save_file(suitable_path)
+            return suitable_path, report_path
         finally:
             if self.email_db and self.email_db.db_connector:
                 await self.email_db.db_connector.disconnect()

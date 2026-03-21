@@ -367,11 +367,12 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
             return
         last_progress_update_ts = now_ts
 
+        pct = int((current / total) * 100) if total else 0
         progress_text = (
             f"📊 Обробка файлу:\n\n"
             f"Оброблено: {current}/{total}\n"
             f"Залишилося: {total - current}\n"
-            f"Прогрес: {int((current / total) * 100)}%\n\n"
+            f"Прогрес: {pct}%\n\n"
             f"Поточна компанія: {company_name}"
         )
 
@@ -402,11 +403,16 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
         # Process file with progress callback
         email_processor = EmailProcessor()
         email_processor.set_progress_callback(progress_callback)
-        output_path = await email_processor.process_file_filter_only(temp_file_path)
+        suitable_path, report_path = await email_processor.process_file_filter_only(temp_file_path)
 
-        # Send result file
-        result_file = types.FSInputFile(output_path)
-        await _send_document_with_retry(result_file, caption="✅ Файл з підходящими компаніями.")
+        await _send_document_with_retry(
+            types.FSInputFile(report_path),
+            caption="📋 Загальний звіт: усі рядки + причина / галузь AI / дослідження AI.",
+        )
+        await _send_document_with_retry(
+            types.FSInputFile(suitable_path),
+            caption="✅ Лише підходящі компанії.",
+        )
 
         # Delete progress message
         if progress_msg:
@@ -418,8 +424,10 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
         # Cleanup
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        if os.path.exists(suitable_path):
+            os.remove(suitable_path)
+        if os.path.exists(report_path):
+            os.remove(report_path)
 
     except Exception as e:
         await _send_text_with_retry(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)
