@@ -10,6 +10,7 @@ from config import (
     BREVO_API_KEY,
     BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME,
+    EMAIL_RESEND_COOLDOWN_DAYS,
 )
 from modules.AIService.openai_service import OpenAIService
 from modules.EmailSender.brevo_sender import BrevoSender
@@ -149,9 +150,13 @@ class EmailProcessor:
                     if not can_send:
                         email_contents.append("")
                         company_researches.append("")
-                        suitability_results.append({'is_suitable': False, 'industry': 'Unknown', 'rejection_reason': f'Email відправлявся менше 3 місяців тому'})
+                        suitability_results.append({
+                            'is_suitable': False,
+                            'industry': 'Unknown',
+                            'rejection_reason': f'Email відправлявся менше {EMAIL_RESEND_COOLDOWN_DAYS} днів тому',
+                        })
                         await self._update_progress(i, total, f"Пропущено: {company_name} (email відправлявся нещодавно)")
-                        print(f"⏭️ Пропущено {company_name}: email {email} відправлявся менше 3 місяців тому")
+                        print(f"⏭️ Пропущено {company_name}: email {email} — cooldown {EMAIL_RESEND_COOLDOWN_DAYS} днів")
                         continue
                 
                 await self._update_progress(i, total, f"Обробка: {company_name}")
@@ -252,8 +257,8 @@ class EmailProcessor:
                 await self.email_db.db_connector.disconnect()
             await self.finish_process()
 
-    async def process_file_filter_only(self, file_path: str) -> tuple[str, str]:
-        """Фільтр: підходящі в окремий файл + повний звіт з усіма рядками та колонками причини/AI."""
+    async def process_file_filter_only(self, file_path: str) -> tuple[str, str, str]:
+        """Повертає (загальний звіт, усі підходящі, підходящі з попередньою відправкою після cooldown)."""
         db_connector = AsyncSQLiteConnector("sent_emails_db")
         await db_connector.connect()
         self.email_db = EmailDatabase(db_connector)
@@ -282,6 +287,8 @@ class EmailProcessor:
             row_skip_reason: list[str] = [""] * total
             row_industry_ai: list[str] = [""] * total
             row_research_ai: list[str] = [""] * total
+            row_last_send: list[str] = ["new"] * total
+            suitable_prior_send: list[bool] = [False] * total
 
             done_count = 0
             progress_lock = asyncio.Lock()
@@ -297,6 +304,13 @@ class EmailProcessor:
                     idx, company = item
                     company_name = str(company.get('company_name', '')).strip()
                     email = str(company.get('email', '')).strip()
+                    last_sent_dt = None
+                    last_send_display = "new"
+                    if email:
+                        last_sent_dt = await self.email_db.get_last_sent_date(email)
+                        if last_sent_dt:
+                            last_send_display = last_sent_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    row_last_send[idx] = last_send_display
                     status_line = "Пропущено"
 
                     try:
@@ -309,8 +323,10 @@ class EmailProcessor:
                                 can_send = await self.email_db.can_send_email(email)
                                 if not can_send:
                                     do_ai = False
-                                    status_line = f"Пропущено: {company_name} (email < 3 міс)"
-                                    row_skip_reason[idx] = "Email відправлявся менше 3 місяців тому (не робимо AI)"
+                                    status_line = f"Пропущено: {company_name} (email < {EMAIL_RESEND_COOLDOWN_DAYS} дн.)"
+                                    row_skip_reason[idx] = (
+                                        f"Email відправлявся менше {EMAIL_RESEND_COOLDOWN_DAYS} днів тому (не робимо AI)"
+                                    )
 
                             if do_ai:
                                 status_line = f"Обробка: {company_name}"
@@ -338,6 +354,7 @@ class EmailProcessor:
                                     suitable_mask[idx] = True
                                     suitable_researches[idx] = research_text
                                     suitable_industries[idx] = ind_str
+                                    suitable_prior_send[idx] = bool(email and last_sent_dt is not None)
                                     row_skip_reason[idx] = "Підходить"
                                     if email:
                                         await self.email_db.record_sent_email(
@@ -366,7 +383,8 @@ class EmailProcessor:
             await self._update_progress(total, total, "Збереження...")
             base = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
 
-            # Загальний звіт: усі рядки + 3 колонки
+            # Загальний звіт: усі рядки + колонки
+            full_report_df["Остання відправка"] = row_last_send
             full_report_df["Чому пропущено / статус"] = row_skip_reason
             full_report_df["Галузь (знайдено AI)"] = row_industry_ai
             full_report_df["Спеціалізація / дослідження (AI)"] = row_research_ai
@@ -384,7 +402,29 @@ class EmailProcessor:
             processor.df = result_df
             suitable_path = base + '_suitable.xlsx'
             await processor.save_file(suitable_path)
-            return suitable_path, report_path
+
+            resend_positions = [
+                j for j, orig_i in enumerate(suitable_indices) if suitable_prior_send[orig_i]
+            ]
+            if resend_positions:
+                result_resend_df = result_df.iloc[resend_positions].copy()
+                for col in result_resend_df.select_dtypes(include=['object']).columns:
+                    result_resend_df[col] = result_resend_df[col].map(
+                        lambda x: x.strip() if isinstance(x, str) else x
+                    )
+                result_resend_df['company_research'] = [
+                    suitable_researches[suitable_indices[j]] for j in resend_positions
+                ]
+                result_resend_df['industry'] = [
+                    suitable_industries[suitable_indices[j]] for j in resend_positions
+                ]
+                processor.df = result_resend_df
+            else:
+                processor.df = result_df.iloc[[]].copy()
+            resend_path = base + "_suitable_povtorno_pislya_cooldown.xlsx"
+            await processor.save_file(resend_path)
+
+            return report_path, suitable_path, resend_path
         finally:
             if self.email_db and self.email_db.db_connector:
                 await self.email_db.db_connector.disconnect()

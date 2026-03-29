@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
-from config import SQL_LITE_LOG_PATH
+from config import SQL_LITE_LOG_PATH, EMAIL_RESEND_COOLDOWN_DAYS
 from modules.MainLogger.logger import setup_logger_from_yaml
 
 # Налаштування логування
@@ -221,11 +221,7 @@ class EmailDatabase:
     
     async def can_send_email(self, email: str) -> bool:
         """
-        Перевіряє чи можна відправляти email (чи пройшло 3+ місяці з останньої відправки).
-        
-        Returns:
-            True якщо можна відправляти (ніколи не відправляли або пройшло 3+ місяці)
-            False якщо не можна (відправляли менше 3 місяців тому)
+        Перевіряє чи можна відправляти email (чи пройшло достатньо днів з останньої відправки/запису).
         """
         if not email or not email.strip():
             return True  # Якщо email порожній - можна обробляти
@@ -234,12 +230,16 @@ class EmailDatabase:
         if not last_sent:
             return True  # Ніколи не відправляли - можна
         
-        three_months_ago = datetime.now() - timedelta(days=90)
-        can_send = last_sent < three_months_ago
+        cooldown = timedelta(days=EMAIL_RESEND_COOLDOWN_DAYS)
+        threshold = datetime.now() - cooldown
+        can_send = last_sent < threshold
         
         if not can_send:
             days_passed = (datetime.now() - last_sent).days
-            logger_t.info(f"Email {email} відправлявся {days_passed} днів тому. Потрібно чекати ще {90 - days_passed} днів.")
+            wait_more = max(0, EMAIL_RESEND_COOLDOWN_DAYS - days_passed)
+            logger_t.info(
+                f"Email {email} відправлявся {days_passed} днів тому. Потрібно чекати ще ~{wait_more} днів."
+            )
         
         return can_send
     

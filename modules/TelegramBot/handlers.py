@@ -16,7 +16,7 @@ from initial import DBHandler, WebScraperHandler
 from modules.TelegramBot.dt import AVAIL_DICT, BERUF_DICT, BRANCH_DICT, TIME_DICT
 from modules.EmailProcessor.email_processor import EmailProcessor
 from modules.EmailContentGenerator.template_parser import extract_template_fields
-from config import MAX_CONCURRENT_EMAIL_PROCESSES
+from config import MAX_CONCURRENT_EMAIL_PROCESSES, EMAIL_RESEND_COOLDOWN_DAYS
 from typess import FiltrOption, JobParams, ScraperStatus
 from pathlib import Path
 
@@ -403,15 +403,24 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
         # Process file with progress callback
         email_processor = EmailProcessor()
         email_processor.set_progress_callback(progress_callback)
-        suitable_path, report_path = await email_processor.process_file_filter_only(temp_file_path)
+        report_path, suitable_path, resend_path = await email_processor.process_file_filter_only(
+            temp_file_path
+        )
 
         await _send_document_with_retry(
             types.FSInputFile(report_path),
-            caption="📋 Загальний звіт: усі рядки + причина / галузь AI / дослідження AI.",
+            caption="📋 Загальний звіт: усі рядки + остання відправка (new якщо не було) / статус / AI.",
         )
         await _send_document_with_retry(
             types.FSInputFile(suitable_path),
-            caption="✅ Лише підходящі компанії.",
+            caption="✅ Усі підходящі компанії.",
+        )
+        await _send_document_with_retry(
+            types.FSInputFile(resend_path),
+            caption=(
+                f"🔁 Підходящі з попередньою відправкою; з моменту останньої минуло ≥ "
+                f"{EMAIL_RESEND_COOLDOWN_DAYS} дн."
+            ),
         )
 
         # Delete progress message
@@ -428,6 +437,8 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
             os.remove(suitable_path)
         if os.path.exists(report_path):
             os.remove(report_path)
+        if os.path.exists(resend_path):
+            os.remove(resend_path)
 
     except Exception as e:
         await _send_text_with_retry(f"❌ Помилка при обробці файлу: {str(e)}", parse_mode=ParseMode.HTML)

@@ -10,6 +10,35 @@ from openai import AsyncOpenAI
 
 class OpenAIService:
     """OpenAI service for generating text and researching companies."""
+
+    @staticmethod
+    def _suitability_it_or_government_only(industry: str, rejection_reason: str) -> tuple[bool, str]:
+        """Підходить усе, крім IT та державного сектору. Невизначена галузь — підходить."""
+        ind = (industry or "").strip().lower()
+        if ind in ("", "unknown", "n/a", "na", "unclear", "undetermined", "not specified", "unspecified"):
+            return True, ""
+        combined = f"{industry or ''} {rejection_reason or ''}".lower()
+        gov_tokens = (
+            "government", "public sector", "state agency", "federal agency", "municipal",
+            "ministry", "police", "law enforcement", "armed forces", "military",
+            "fire department", "behörde", "öffentlich", "öffentliche hand",
+            "landratsamt", "stadtverwaltung", "bundesamt", "eu commission",
+            "державн", "муніципал", "уряд", "поліц", "держслуж", "влада",
+        )
+        it_tokens = (
+            "information technology", "software company", "software development",
+            "it company", "it services", "saas", "cloud computing", "data center",
+            "software engineer", "programming services", "app development",
+            "web development agency", "cybersecurity company", "computer software",
+            "інформаційні технології",
+        )
+        for t in gov_tokens:
+            if t in combined:
+                return False, rejection_reason or "Government / public sector"
+        for t in it_tokens:
+            if t in combined:
+                return False, rejection_reason or "IT / software"
+        return True, ""
     
     def __init__(self, api_key: str, model: str = "gpt-4"):
         """
@@ -44,7 +73,8 @@ class OpenAIService:
             Dictionary with researched information for each field
         """
         try:
-            system_prompt = """Find company executive names (CEO/founder/owner). Search: website, LinkedIn, Handelsregister. Determine industry and suitability. Return JSON."""
+            system_prompt = """Find company executive names (CEO/founder/owner). Search: website, LinkedIn, Handelsregister. Determine industry and suitability. Return JSON.
+Suitability: mark NOT suitable ONLY for IT/software companies OR government/public sector. If industry is unknown or unclear, mark suitable (is_suitable true). Banks and other private businesses are suitable."""
             
             if required_fields:
                 fields_list = ", ".join(sorted(required_fields))
@@ -56,8 +86,8 @@ Find: {fields_list}
 
 Search: "{company_name} CEO", "{company_name} founder", "{company_name} Geschäftsführer", Handelsregister, LinkedIn.
 
-NOT SUITABLE: Government, Banks, Police, IT companies.
-SUITABLE: All other private companies.
+NOT SUITABLE: ONLY IT/software companies OR government/public sector (incl. police, ministries, municipal authorities).
+SUITABLE: Everyone else, including if industry/specialization is unknown, unclear, or not determined. Banks and private companies are suitable unless clearly IT or government.
 
 EMAIL RULE (critical): Do not use / do not consider valid any email address that contains these words: bewerbung, personal, hr, karriere. If the only contact email you find contains any of these, treat as no valid email and keep searching for another contact (e.g. CEO/founder direct email). Emails with these words are invalid for our campaign.
 
@@ -75,8 +105,12 @@ Return JSON:
 }}"""
             else:
                 user_prompt = f"""Research: {company_name}
+Job: {company_info.get('title', 'N/A')}
+Location: {company_info.get('location', 'N/A')}
 Find: business activity, industry, description.
-Return JSON with contact info, industry, is_suitable, rejection_reason."""
+NOT SUITABLE: ONLY IT/software OR government/public sector.
+SUITABLE: unknown/unclear industry counts as suitable. Banks and private sector suitable.
+Return JSON with industry, is_suitable, rejection_reason (empty if suitable)."""
             
             # Перший запит з більш активною температурою
             response = await self.client.chat.completions.create(
@@ -100,6 +134,11 @@ Return JSON with contact info, industry, is_suitable, rejection_reason."""
                 field_values['is_suitable'] = research_data.get('is_suitable', False)
                 field_values['industry'] = research_data.get('industry', 'Unknown')
                 field_values['rejection_reason'] = research_data.get('rejection_reason', '')
+                ok, rr = self._suitability_it_or_government_only(
+                    field_values['industry'], field_values['rejection_reason']
+                )
+                field_values['is_suitable'] = ok
+                field_values['rejection_reason'] = rr if not ok else ''
                 
                 # Витягти значення з JSON структури
                 if 'contact' in research_data:
@@ -167,24 +206,11 @@ Return JSON with contact info, industry, is_suitable, rejection_reason."""
             }
         """
         try:
-            system_prompt = """You are a company industry classifier. Your task is to:
-1. Determine the company's industry/sector
-2. Check if the company is suitable for our services
-
-COMPANIES THAT ARE NOT SUITABLE (reject these):
-- Government institutions (hospitals, insurance companies, fire departments, police, etc.)
-- Banks and financial institutions
-- Police departments and law enforcement
-- IT companies and software development companies
-
-ALL OTHER COMPANIES ARE SUITABLE (accept these):
-- Manufacturing
-- Retail
-- Services
-- Construction
-- Logistics
-- Hospitality
-- And all other private sector companies
+            system_prompt = """You are a company industry classifier.
+1. Determine the company's industry/sector (use "Unknown" if unclear).
+2. Mark NOT suitable ONLY for: IT/software companies OR government/public sector (police, ministries, municipal authorities, state agencies).
+3. If industry is unknown or not determined — mark suitable (is_suitable true).
+4. Banks, insurance, hospitals (private), retail, manufacturing, etc. are suitable unless clearly IT or government.
 
 Return your analysis in JSON format."""
             
@@ -204,24 +230,21 @@ Location: {company_info.get('location', 'N/A')}
 {research_context}
 
 TASK:
-1. Determine the company's industry/sector (e.g., "Manufacturing", "Retail", "IT", "Banking", "Healthcare", "Government", etc.)
-2. Check if company is suitable:
-   - NOT suitable: Government institutions, Banks, Police, IT companies
-   - Suitable: All other private sector companies
+1. Industry/sector; use "Unknown" if you cannot tell.
+2. is_suitable false ONLY for IT/software OR government/public sector. Unknown industry → is_suitable true.
 
 Return JSON:
 {{
-  "industry": "specific industry name (e.g., Manufacturing, Retail, IT, Banking, Healthcare, Government, etc.)",
+  "industry": "specific industry name or Unknown",
   "is_suitable": true or false,
-  "rejection_reason": "reason why not suitable (only if is_suitable is false, otherwise empty string)"
+  "rejection_reason": "only if not suitable"
 }}
 
 Examples:
-- If company is "Deutsche Bank" → {{"industry": "Banking", "is_suitable": false, "rejection_reason": "Banking/Financial institution"}}
-- If company is "Polizei Berlin" → {{"industry": "Government/Police", "is_suitable": false, "rejection_reason": "Police/Law enforcement"}}
-- If company is "SAP" → {{"industry": "IT", "is_suitable": false, "rejection_reason": "IT company"}}
-- If company is "BMW" → {{"industry": "Manufacturing", "is_suitable": true, "rejection_reason": ""}}
-- If company is "Rewe" → {{"industry": "Retail", "is_suitable": true, "rejection_reason": ""}}"""
+- "Deutsche Bank" → {{"industry": "Banking", "is_suitable": true, "rejection_reason": ""}}
+- "Polizei Berlin" → {{"industry": "Government/Police", "is_suitable": false, "rejection_reason": "Government/public sector"}}
+- "SAP" → {{"industry": "IT", "is_suitable": false, "rejection_reason": "IT company"}}
+- "BMW" → {{"industry": "Manufacturing", "is_suitable": true, "rejection_reason": ""}}"""
             
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -234,18 +257,13 @@ Examples:
             )
             
             result = json.loads(response.choices[0].message.content)
-            
-            # Ensure is_suitable is boolean
-            is_suitable = result.get('is_suitable', False)
-            if isinstance(is_suitable, str):
-                is_suitable = is_suitable.lower() in ('true', '1', 'yes')
-            elif not isinstance(is_suitable, bool):
-                is_suitable = bool(is_suitable)
-            
+            industry_str = str(result.get('industry', 'Unknown'))
+            rr_str = str(result.get('rejection_reason', ''))
+            ok, rr = self._suitability_it_or_government_only(industry_str, rr_str)
             return {
-                'is_suitable': is_suitable,
-                'industry': str(result.get('industry', 'Unknown')),
-                'rejection_reason': str(result.get('rejection_reason', ''))
+                'is_suitable': ok,
+                'industry': industry_str,
+                'rejection_reason': rr if not ok else ''
             }
             
         except Exception as e:
