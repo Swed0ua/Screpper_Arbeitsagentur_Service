@@ -418,8 +418,7 @@ async def _run_email_file_processing(message: types.Message, file_name: str) -> 
         await _send_document_with_retry(
             types.FSInputFile(resend_path),
             caption=(
-                f"🔁 Підходящі з попередньою відправкою; з моменту останньої минуло ≥ "
-                f"{EMAIL_RESEND_COOLDOWN_DAYS} дн."
+                "🆕 Підходящі компанії лише з новими поштовими адресами (раніше не відправляли)."
             ),
         )
 

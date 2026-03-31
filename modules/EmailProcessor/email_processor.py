@@ -258,7 +258,7 @@ class EmailProcessor:
             await self.finish_process()
 
     async def process_file_filter_only(self, file_path: str) -> tuple[str, str, str]:
-        """Повертає (загальний звіт, усі підходящі, підходящі з попередньою відправкою після cooldown)."""
+        """Повертає (загальний звіт, усі підходящі, лише підходящі з новими поштовими адресами)."""
         db_connector = AsyncSQLiteConnector("sent_emails_db")
         await db_connector.connect()
         self.email_db = EmailDatabase(db_connector)
@@ -288,7 +288,7 @@ class EmailProcessor:
             row_industry_ai: list[str] = [""] * total
             row_research_ai: list[str] = [""] * total
             row_last_send: list[str] = ["new"] * total
-            suitable_prior_send: list[bool] = [False] * total
+            suitable_new_email: list[bool] = [False] * total
 
             done_count = 0
             progress_lock = asyncio.Lock()
@@ -354,7 +354,7 @@ class EmailProcessor:
                                     suitable_mask[idx] = True
                                     suitable_researches[idx] = research_text
                                     suitable_industries[idx] = ind_str
-                                    suitable_prior_send[idx] = bool(email and last_sent_dt is not None)
+                                    suitable_new_email[idx] = bool(email and last_sent_dt is None)
                                     row_skip_reason[idx] = "Підходить"
                                     if email:
                                         await self.email_db.record_sent_email(
@@ -403,25 +403,25 @@ class EmailProcessor:
             suitable_path = base + '_suitable.xlsx'
             await processor.save_file(suitable_path)
 
-            resend_positions = [
-                j for j, orig_i in enumerate(suitable_indices) if suitable_prior_send[orig_i]
+            new_email_positions = [
+                j for j, orig_i in enumerate(suitable_indices) if suitable_new_email[orig_i]
             ]
-            if resend_positions:
-                result_resend_df = result_df.iloc[resend_positions].copy()
+            if new_email_positions:
+                result_resend_df = result_df.iloc[new_email_positions].copy()
                 for col in result_resend_df.select_dtypes(include=['object']).columns:
                     result_resend_df[col] = result_resend_df[col].map(
                         lambda x: x.strip() if isinstance(x, str) else x
                     )
                 result_resend_df['company_research'] = [
-                    suitable_researches[suitable_indices[j]] for j in resend_positions
+                    suitable_researches[suitable_indices[j]] for j in new_email_positions
                 ]
                 result_resend_df['industry'] = [
-                    suitable_industries[suitable_indices[j]] for j in resend_positions
+                    suitable_industries[suitable_indices[j]] for j in new_email_positions
                 ]
                 processor.df = result_resend_df
             else:
                 processor.df = result_df.iloc[[]].copy()
-            resend_path = base + "_suitable_povtorno_pislya_cooldown.xlsx"
+            resend_path = base + "_suitable_new_emails.xlsx"
             await processor.save_file(resend_path)
 
             return report_path, suitable_path, resend_path
